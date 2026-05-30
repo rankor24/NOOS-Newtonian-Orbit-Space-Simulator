@@ -31,8 +31,8 @@ const assertAngleNear = (actual: number, expected: number) => {
   });
 
   assert.equal(guidance.phase, "brake");
-  assertAngleNear(guidance.targetHeading, 0);
-  assert.ok(guidance.throttlePercent > 0);
+  assertAngleNear(guidance.targetHeading, Math.PI); // prograde relative velocity pointing left (Math.PI)
+  assert.ok(guidance.throttlePercent < 0); // reverse throttle applied!
 }
 
 {

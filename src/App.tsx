@@ -6,7 +6,8 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { StarSystemCanvas } from "./components/StarSystemCanvas";
 import { EliteCockpitHud } from "./components/EliteCockpitHud";
-import { STARS, AU } from "./data/stars";
+import { STARS, AU, getOrCreatePlayableStar } from "./data/stars";
+import { MainMenu } from "./components/MainMenu";
 import { createInitialState, createDefaultPlayerProfile, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "./data/ships";
 import { GameState, CelestialBody, SpaceContract, MissionLog, ShipState } from "./types";
@@ -14,6 +15,7 @@ import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, get
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
+import { computeApproachGuidance } from "./utils/autopilot";
 
 const GalacticMap = lazy(() => import("./components/GalacticMap").then((m) => ({ default: m.GalacticMap })));
 const MarketPanel = lazy(() => import("./components/MarketPanel").then((m) => ({ default: m.MarketPanel })));
@@ -80,6 +82,123 @@ const next = getAbsoluteBodyPosition(body.id, bodies, time + dt);
 return { vx: next.x - current.x, vy: next.y - current.y };
 }
 
+const createCustomInitialState = (
+  name: string,
+  starId: string,
+  profession: "miner" | "merchant" | "explorer"
+): GameState => {
+  // Ensure the playable star is built lazily under the stars core registry
+  getOrCreatePlayableStar(starId);
+  
+  // Create solid initial state
+  const tempState = createInitialState(name);
+  
+  // Custom modifications:
+  let startingCredits = 2000;
+  let miningXp = 0;
+  let tradeXp = 0;
+  let explorationXp = 0;
+  
+  const ship = { ...tempState.ship };
+  
+  if (profession === "merchant") {
+    startingCredits = 3500; // Starting capital
+    tradeXp = 500; // rank 2 Trade
+    ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 1, luxuries: 2, he3: 0 };
+  } else if (profession === "miner") {
+    startingCredits = 1500;
+    miningXp = 500; // rank 2 Mining
+    ship.miningPower = 4.0; // drill_i bonus
+    ship.installedUpgradeIds = ["drill_i"];
+    ship.cargo = { water: 2, fuel: 0, ore: 1, machinery: 0, luxuries: 0, he3: 0 };
+  } else if (profession === "explorer") {
+    startingCredits = 1200;
+    explorationXp = 500; // rank 2 Exploration
+    ship.scannerRangeLy = 12; // sensor_i bonus
+    ship.systemScannerRange = 8 * AU; // sensor_i range
+    ship.installedUpgradeIds = ["sensor_i"];
+    ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 0, luxuries: 0, he3: 1 }; // starting Helium-3!
+  }
+  
+  // Coordinate positioning around active starting star:
+  let startBodyId = "sol_earth";
+  let startPortId = "base_earth_1";
+  
+  const activePlayableStar = getOrCreatePlayableStar(starId) || STARS[0];
+  const starPlanets = activePlayableStar.planets;
+  
+  if (starId !== "star_sol") {
+    // Look for first populated planetary body or fallback
+    const startBody = starPlanets.find(b => b.hasMarket) || starPlanets[0];
+    if (startBody) {
+      startBodyId = startBody.id;
+      startPortId = startBody.id; // defaults as planet-id port
+      
+      const planetPos = getAbsoluteBodyPosition(startBody.id, starPlanets, 0);
+      ship.x = planetPos.x + 2.5e7; // Orbit distance around selected body
+      ship.y = planetPos.y;
+      
+      // Calculate planet velocity to matching flight orbital track
+      const dt = 1;
+      const t0 = getAbsoluteBodyPosition(startBody.id, starPlanets, 0);
+      const t1 = getAbsoluteBodyPosition(startBody.id, starPlanets, dt);
+      const planetVx = t1.x - t0.x;
+      const planetVy = t1.y - t0.y;
+      
+      ship.vx = planetVx;
+      ship.vy = planetVy + 1500; // Stable tangential orbital velocity delta
+    }
+  }
+
+  const ownedShipRecord = {
+    id: ship.id || "starter_sidewinder_ship",
+    hullId: ship.hullId || SIDEWINDER_STARTER_PROFILE.id,
+    name: ship.name,
+    ship: ship,
+    homePortId: startPortId
+  };
+
+  const logs: MissionLog[] = [
+    {
+      timestamp: "Year 2086, Day 01 - 00:00:00",
+      text: `Flight Certificate Activated. Commander ${name} online around ${activePlayableStar.name}. Starting alignment verified.`,
+      type: "info"
+    },
+    {
+      timestamp: "Year 2086, Day 01 - 00:00:01",
+      text: `License Type: ${profession === "miner" ? "Asteroid Miner" : profession === "merchant" ? "Merchant Courier" : "Stellar Cartographer"} (Rank 2 Secured).`,
+      type: "success"
+    }
+  ];
+
+  return {
+    ...tempState,
+    profileId: `cmdr_${Date.now()}`,
+    activeStarId: starId,
+    commanderName: name,
+    playerCredits: startingCredits,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    selectedBodyId: startBodyId,
+    selectedPortId: startPortId,
+    ship: ship,
+    ownedShips: [ownedShipRecord],
+    activeShipId: ownedShipRecord.id,
+    playerProfile: {
+      ...tempState.playerProfile,
+      overallLevel: 1,
+      career: {
+        mining: { xp: miningXp, level: miningXp > 0 ? 2 : 1 },
+        trade: { xp: tradeXp, level: tradeXp > 0 ? 2 : 1 },
+        exploration: { xp: explorationXp, level: explorationXp > 0 ? 2 : 1 },
+        operations: { xp: 0, level: 1 },
+        security: { xp: 0, level: 1 }
+      }
+    },
+    logs
+  };
+};
+
 export default function App() {
 const migrateLoadedState = (parsed: any): GameState => {
 const fallback = createInitialState(parsed?.commanderName || "Commander");
@@ -136,6 +255,7 @@ saveCommanderProfile(fresh, fresh.profileId);
 return fresh;
 });
 const [profileSummaries, setProfileSummaries] = useState(() => listCommanderProfiles());
+const [isInMainMenu, setIsInMainMenu] = useState<boolean>(true);
 
 const [activeTab, setActiveTab] = useState<"nav" | "market" | "upgrades" | "contracts">("nav");
 const [mapMode, setMapMode] = useState<"galaxy" | "star" | "ship">("star");
@@ -155,11 +275,21 @@ const syncOwnedShips = (state: GameState): GameState => ({
 ownedShips: state.ownedShips.map((entry) => entry.id === state.activeShipId ? { ...entry, name: state.ship.name, ship: state.ship } : entry),
 });
 
+// References for rapid simulation tick updates to avoid closure issues
+const stateRef = useRef(gameState);
+stateRef.current = gameState;
+const autopilotRef = useRef(autopilotMode);
+autopilotRef.current = autopilotMode;
+
 useEffect(() => {
-const synced = syncOwnedShips(gameState);
-saveCommanderProfile(synced, synced.profileId);
-setProfileSummaries(listCommanderProfiles());
-}, [gameState]);
+  const interval = setInterval(() => {
+    const current = stateRef.current;
+    const synced = syncOwnedShips(current);
+    saveCommanderProfile(synced, synced.profileId);
+    setProfileSummaries(listCommanderProfiles());
+  }, 5000); // 5 seconds autosave interval
+  return () => clearInterval(interval);
+}, []);
 
 useEffect(() => {
 localStorage.setItem("newtonian_theme", uiTheme);
@@ -169,8 +299,13 @@ localStorage.setItem("newtonian_theme", uiTheme);
 const posCacheRef = useRef<BodyPosCache>(new Map());
 
 // Game bodies in the current active solar system
-const activeStar = STARS.find((s) => s.id === gameState.activeStarId) || STARS[0];
+const activeStar = getOrCreatePlayableStar(gameState.activeStarId) || STARS.find((s) => s.id === gameState.activeStarId) || STARS[0];
 const systemBodies = activeStar.planets;
+
+const activeStarRef = useRef(activeStar);
+activeStarRef.current = activeStar;
+const systemBodiesRef = useRef(systemBodies);
+systemBodiesRef.current = systemBodies;
 
 // Selected object info
 const selectedBody = systemBodies.find((b) => b.id === gameState.selectedBodyId) || null;
@@ -371,18 +506,12 @@ starColorOverride: "",
 
 const activeTheme = THEMES[uiTheme];
 
-// References for rapid simulation tick updates to avoid closure issues
-const stateRef = useRef(gameState);
-stateRef.current = gameState;
-const autopilotRef = useRef(autopilotMode);
-autopilotRef.current = autopilotMode;
-
 // Unified Game loop
 useEffect(() => {
-let lastTime = performance.now();
-let frameId: number;
+  let lastTime = performance.now();
+  let frameId: number;
 
-const tick = async () => {
+  const tick = async () => {
 const now = performance.now();
 const realDt = (now - lastTime) / 1000; // seconds
 lastTime = now;
@@ -396,8 +525,8 @@ return;
 const current = stateRef.current;
 const gameDt = realDt * current.timeScale; // Game seconds elapsed
 
-// Build position cache once per tick — all physics calls reuse this
-const posCache = buildBodyPositionCache(systemBodies, current.gameTime);
+    // Build position cache once per tick — all physics calls reuse this
+    const posCache = buildBodyPositionCache(systemBodiesRef.current, current.gameTime);
 posCacheRef.current = posCache;
 
 if (current.flightMode === "interstellar" && current.interstellar) {
@@ -446,13 +575,21 @@ frameId = requestAnimationFrame(tick);
 return;
 }
 
-// --- 1. Autopilot Core Control Loop ---
-let targetHeading = current.ship.heading;
-let throttleCommand = (autopilotRef.current === "none" || autopilotRef.current === "align-target")
-? current.ship.throttlePercent
-: 0;
+    // --- 1. Autopilot Core Control Loop ---
+    let targetHeading = current.ship.heading;
+    let throttleCommand = (autopilotRef.current === "none" || autopilotRef.current === "align-target")
+      ? current.ship.throttlePercent
+      : 0;
 
-const activeTargetBody = systemBodies.find((b) => b.id === current.selectedBodyId) || domGravity.body;
+    const tickDomGravity = getDominantGravitySource(
+      current.ship.x,
+      current.ship.y,
+      systemBodiesRef.current,
+      current.gameTime,
+      activeStarRef.current.mass * 1.989e30,
+      posCache
+    );
+    const activeTargetBody = systemBodiesRef.current.find((b) => b.id === current.selectedBodyId) || tickDomGravity.body;
 
 if (autopilotRef.current !== "none" && activeTargetBody) {
 // Calculate relative coordinates and velocities using frame cache
@@ -460,59 +597,66 @@ const targetBodyPos = posCache.get(activeTargetBody.id) || { x: 0, y: 0 };
 const dx = current.ship.x - targetBodyPos.x;
 const dy = current.ship.y - targetBodyPos.y;
 
-// Approximate target velocity numerically (need next frame position for velocity)
-const dtVel = 1.0;
-const nextCache = buildBodyPositionCache(systemBodies, current.gameTime + dtVel);
-const nextBodyPos = nextCache.get(activeTargetBody.id) || targetBodyPos;
-const targetVx = nextBodyPos.x - targetBodyPos.x;
-const targetVy = nextBodyPos.y - targetBodyPos.y;
+      // Approximate target velocity numerically (need next frame position for velocity)
+      const dtVel = 1.0;
+      const nextCache = buildBodyPositionCache(systemBodiesRef.current, current.gameTime + dtVel);
+      const nextBodyPos = nextCache.get(activeTargetBody.id) || targetBodyPos;
+      const targetVx = nextBodyPos.x - targetBodyPos.x;
+      const targetVy = nextBodyPos.y - targetBodyPos.y;
 
-const relVx = current.ship.vx - targetVx;
-const relVy = current.ship.vy - targetVy;
-const relSpeed = Math.hypot(relVx, relVy);
-let desiredDeltaVx = 0;
-let desiredDeltaVy = 0;
+      const relVx = current.ship.vx - targetVx;
+      const relVy = current.ship.vy - targetVy;
+      const relSpeed = Math.hypot(relVx, relVy);
+      let desiredDeltaVx = 0;
+      let desiredDeltaVy = 0;
 
-if (autopilotRef.current === "match-speed") {
-// Match selected body's velocity by burning against relative velocity.
-if (relSpeed > 5) {
-desiredDeltaVx = -relVx;
-desiredDeltaVy = -relVy;
-targetHeading = Math.atan2(desiredDeltaVy, desiredDeltaVx);
+      if (autopilotRef.current === "match-speed") {
+        // Match selected body's velocity by burning against relative velocity.
+        if (relSpeed > 5) {
+          desiredDeltaVx = -relVx;
+          desiredDeltaVy = -relVy;
+          targetHeading = Math.atan2(desiredDeltaVy, desiredDeltaVx);
 
-const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
-throttleCommand = angleError < 0.35 ? clamp((relSpeed / 2500) * 100, 8, 70) : 0;
-} else {
-// Velocity matched successfully
-throttleCommand = 0;
-setAutopilotMode("none");
-addConsoleLog("Autopilot: Relative velocity matched. Orbital station approach secured.", "success");
-}
-} else if (autopilotRef.current === "circularize" && relativeOrbit) {
-// Circularize around the selected body using a local tangential target velocity.
-const G_const = 6.6743e-11;
-const bodyMass = activeTargetBody.type === "star" ? activeTargetBody.mass * 1.989e30 : activeTargetBody.mass;
-const dist = Math.hypot(dx, dy);
-const v_circular = Math.sqrt((G_const * bodyMass) / dist);
-const safeDist = Math.max(1, dist);
-const orbitalDirection = dx * relVy - dy * relVx >= 0 ? 1 : -1;
-const tangentX = (-dy / safeDist) * orbitalDirection;
-const tangentY = (dx / safeDist) * orbitalDirection;
-const desiredRelVx = tangentX * v_circular;
-const desiredRelVy = tangentY * v_circular;
-desiredDeltaVx = desiredRelVx - relVx;
-desiredDeltaVy = desiredRelVy - relVy;
-const speedError = Math.hypot(desiredDeltaVx, desiredDeltaVy);
+          const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
+          throttleCommand = angleError < 0.35 ? clamp((relSpeed / 2500) * 100, 8, 70) : 0;
+        } else {
+          // Velocity matched successfully
+          throttleCommand = 0;
+          setAutopilotMode("none");
+          addConsoleLog("Autopilot: Relative velocity matched. Orbital station approach secured.", "success");
+        }
+      } else if (autopilotRef.current === "circularize") {
+        const tickRelativeOrbit = computeOrbitMetrics(
+          current.ship,
+          tickDomGravity.body || systemBodiesRef.current[0],
+          systemBodiesRef.current,
+          current.gameTime,
+          posCache
+        );
+        // Circularize around the selected body using a local tangential target velocity.
+        const G_const = 6.6743e-11;
+        const bodyMass = activeTargetBody.type === "star" ? activeTargetBody.mass * 1.989e30 : activeTargetBody.mass;
+        const dist = Math.hypot(dx, dy);
+        const v_circular = Math.sqrt((G_const * bodyMass) / dist);
+        const safeDist = Math.max(1, dist);
+        const orbitalDirection = dx * relVy - dy * relVx >= 0 ? 1 : -1;
+        const tangentX = (-dy / safeDist) * orbitalDirection;
+        const tangentY = (dx / safeDist) * orbitalDirection;
+        const desiredRelVx = tangentX * v_circular;
+        const desiredRelVy = tangentY * v_circular;
+        desiredDeltaVx = desiredRelVx - relVx;
+        desiredDeltaVy = desiredRelVy - relVy;
+        const speedError = Math.hypot(desiredDeltaVx, desiredDeltaVy);
 
-if (speedError > 15) {
-targetHeading = Math.atan2(desiredDeltaVy, desiredDeltaVx);
-const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
-throttleCommand = angleError < 0.35 ? clamp((speedError / 3000) * 100, 8, 65) : 0;
-} else {
-throttleCommand = 0;
-setAutopilotMode("none");
-addConsoleLog(`Autopilot: Orbit circularized successfully. Eccentricity: ${relativeOrbit.eccentricity.toFixed(3)}`, "success");
-}
+        if (speedError > 15) {
+          targetHeading = Math.atan2(desiredDeltaVy, desiredDeltaVx);
+          const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
+          throttleCommand = angleError < 0.35 ? clamp((speedError / 3000) * 100, 8, 65) : 0;
+        } else {
+          throttleCommand = 0;
+          setAutopilotMode("none");
+          addConsoleLog(`Autopilot: Orbit circularized successfully. Eccentricity: ${tickRelativeOrbit.eccentricity.toFixed(3)}`, "success");
+        }
 } else if (autopilotRef.current === "align-target") {
 // Steer towards target bearing and keep manual throttle control active!
 if (targetBearing !== null) {
@@ -525,48 +669,32 @@ addConsoleLog("Autopilot: Target alignment disengaged (no active target).", "war
 } else if (autopilotRef.current === "approach-target") {
 // APPR: Newtonian automatic approach and docking deceleration assist!
 if (current.selectedBodyId) {
-const dist = Math.hypot(dx, dy);
 const bodyRadius = activeTargetBody.radius ?? 0;
-const altitude = Math.max(0, dist - bodyRadius);
-const ux = -dx / dist;
-const uy = -dy / dist;
-const closingSpeed = -(relVx * ux + relVy * uy);
-
-// Decel capability: a = F / m
 const shipMass = current.ship.dryMass + current.ship.fuelLevel;
 const maxDecel = current.ship.engineThrust / shipMass;
 
-// Braking distance from surface = v_rel^2 / (2 * 0.85 * maxDecel) + safety margin.
-const surfaceBrakingDist = (relSpeed * relSpeed) / (2 * (0.85 * maxDecel)) + 400000;
+// Compute guidance using Newtonian flight assist equations
+const guidance = computeApproachGuidance({
+dx,
+dy,
+relVx,
+relVy,
+maxAcceleration: maxDecel,
+arrivalDistance: bodyRadius + DOCKING_RANGE_METERS * 0.9,
+arrivalSpeed: 25,
+safetyDistance: 400000,
+maxCruiseClosingSpeed: 4500,
+});
 
-// Trigger decel when altitude drops below braking distance from surface,
-// or if closing too fast (emergency brake).
-if (altitude <= surfaceBrakingDist || closingSpeed > 8000) {
-// DECEL PHASE: Point toward target and use REVERSE thrust — no 180 turn needed.
-// Ship is already roughly facing the target from accel phase, so braking is instant.
-targetHeading = Math.atan2(-dy, -dx);
-const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
-
-// Terminate approach when slow AND close to surface (within docking range).
-if (relSpeed < 30 && altitude < DOCKING_RANGE_METERS * 0.9) {
-// Safely arrived!
+if (guidance.phase === "arrived") {
 throttleCommand = 0;
 setAutopilotMode("none");
-addConsoleLog("Autopilot: Dynamic approach secure. Stationary relative speed holding within docking range.", "success");
+addConsoleLog(`Autopilot: Approach secure around ${activeTargetBody.name || "target"}. Velocity matched within docking envelope.`, "success");
 } else {
-// Reverse thrust: negative throttle decelerates while nose stays on target.
-throttleCommand = angleError < 0.25 ? -clamp((relSpeed / 120) * 10, 20, 100) : 0;
-}
-} else {
-// ACCEL PHASE: Point at target and burn to speed!
-targetHeading = Math.atan2(-dy, -dx);
+targetHeading = guidance.targetHeading;
 const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
-
-if (closingSpeed < 4500) {
-throttleCommand = angleError < 0.25 ? 90 : 0;
-} else {
-throttleCommand = 0; // Cruising
-}
+// Let the ship rotate first. Don't fire thrust if misaligned by more than ~14 degrees.
+throttleCommand = angleError < 0.25 ? guidance.throttlePercent : 0;
 }
 } else {
 throttleCommand = 0;
@@ -609,16 +737,17 @@ const actualThrottlePercent = updatedShip.fuelLevel > 0 && !isPowerLocked
 ? Math.max(-100, Math.min(100, throttleCommand * enginePowerScale))
 : 0;
 
+updatedShip.throttlePercent = actualThrottlePercent;
 updatedShip.battery = netBattery;
 
-// Physics motion solver step
-updatedShip = integrateSpacecraft(
-updatedShip,
-systemBodies,
-current.gameTime,
-gameDt,
-actualThrottlePercent,
-activeStar.mass * 1.989e30
+    // Physics motion solver step
+    updatedShip = integrateSpacecraft(
+      updatedShip,
+      systemBodiesRef.current,
+      current.gameTime,
+      gameDt,
+      actualThrottlePercent,
+      activeStarRef.current.mass * 1.989e30
 // No posCache here — sub-stepping advances sim time, cache would be frozen at t=gameTime
 );
 
@@ -664,24 +793,24 @@ dockedBodyId: null,
 gameTime: current.gameTime + gameDt,
 ship: { ...updatedShip, throttlePercent: 0 },
 }));
-addConsoleLog(targetStar
-? `Navigation: ${activeStar.name} gravity well escaped. Deep-space cruise projected toward ${targetStar.name}.`
-: `Navigation: ${activeStar.name} gravity well escaped. Deep-space cruise active. No forward star locked.`, "success");
-frameId = requestAnimationFrame(tick);
-return;
-}
+      addConsoleLog(targetStar
+        ? `Navigation: ${activeStarRef.current.name} gravity well escaped. Deep-space cruise projected toward ${targetStar.name}.`
+        : `Navigation: ${activeStarRef.current.name} gravity well escaped. Deep-space cruise active. No forward star locked.`, "success");
+      frameId = requestAnimationFrame(tick);
+      return;
+    }
 
-// --- 3. Manage Mining Operations ---
-let appendMarkets = { ...current.markets };
-let logsList = [...current.logs];
-let creditsVal = current.playerCredits;
+    // --- 3. Manage Mining Operations ---
+    let appendMarkets = { ...current.markets };
+    let logsList = [...current.logs];
+    let creditsVal = current.playerCredits;
 
-if (current.miningTargetId && current.miningTargetId === current.selectedBodyId) {
-// Mine continuous tick
-const mineNode = systemBodies.find((b) => b.id === current.miningTargetId);
+    if (current.miningTargetId && current.miningTargetId === current.selectedBodyId) {
+      // Mine continuous tick
+      const mineNode = systemBodiesRef.current.find((b) => b.id === current.miningTargetId);
 if (mineNode) {
-const mDx = updatedShip.x - getAbsoluteBodyPosition(mineNode.id, systemBodies, current.gameTime).x;
-const mDy = updatedShip.y - getAbsoluteBodyPosition(mineNode.id, systemBodies, current.gameTime).y;
+const mDx = updatedShip.x - getAbsoluteBodyPosition(mineNode.id, systemBodiesRef.current, current.gameTime).x;
+const mDy = updatedShip.y - getAbsoluteBodyPosition(mineNode.id, systemBodiesRef.current, current.gameTime).y;
 const mDist = Math.hypot(mDx, mDy);
 
 if (mDist < 5e5) { // under 500km bounds
@@ -731,11 +860,11 @@ let crashedBodyName = "";
 const centerDist = Math.hypot(updatedShip.x, updatedShip.y);
 if (centerDist < 6.96e8 * 0.5) { // Star corona bounds
 crashDetected = true;
-crashedBodyName = `${activeStar.name} Photosphere`;
+crashedBodyName = `${activeStarRef.current.name} Photosphere`;
 }
 
 // Body checks using frame cache
-for (const body of systemBodies) {
+for (const body of systemBodiesRef.current) {
 const absByp = posCache.get(body.id);
 if (!absByp) continue;
 const dist = Math.hypot(updatedShip.x - absByp.x, updatedShip.y - absByp.y);
@@ -781,7 +910,7 @@ frameId = requestAnimationFrame(tick);
 
 frameId = requestAnimationFrame(tick);
 return () => cancelAnimationFrame(frameId);
-}, [systemBodies, activeStar, relativeOrbit]);
+}, []);
 
 // Command logs helper
 const addConsoleLog = (text: string, type: "info" | "success" | "warning" = "info") => {
@@ -1344,6 +1473,36 @@ onCompleteContract={handleCompleteContract}
 </Suspense>
 );
 
+  if (isInMainMenu) {
+    return (
+      <MainMenu
+        profiles={profileSummaries}
+        onSelectProfile={(profileId) => {
+          const loaded = loadCommanderProfile(profileId);
+          if (loaded?.ship?.cargo) {
+            setGameState(migrateLoadedState(loaded));
+            setIsInMainMenu(false);
+          }
+        }}
+        onDeleteProfile={(profileId, profileName) => {
+          if (window.confirm(`Are you sure you want to permanently delete Commander ${profileName}? This process is irreversible.`)) {
+            deleteCommanderProfile(profileId);
+            setProfileSummaries(listCommanderProfiles());
+          }
+        }}
+        onCreateProfile={({ name, starId, profession }) => {
+          const newState = createCustomInitialState(name, starId, profession);
+          saveCommanderProfile(newState, newState.profileId);
+          setGameState(newState);
+          setProfileSummaries(listCommanderProfiles());
+          setIsInMainMenu(false);
+        }}
+        uiTheme={uiTheme}
+        setUiTheme={setUiTheme}
+      />
+    );
+  }
+
 return (
 <EliteCockpitHud
 gameState={gameState}
@@ -1373,6 +1532,7 @@ onClearTarget={() => setGameState((g) => ({ ...g, selectedBodyId: null }))}
 onDock={handleDockActivate}
 onUndock={handleUndockActivate}
 onToggleMining={handleToggleMining}
+onExitToMainMenu={() => setIsInMainMenu(true)}
 />
 );
 }

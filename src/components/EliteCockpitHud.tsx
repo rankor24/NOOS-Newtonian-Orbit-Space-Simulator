@@ -60,6 +60,7 @@ interface EliteCockpitHudProps {
   onDock: () => void;
   onUndock: () => void;
   onToggleMining: () => void;
+  onExitToMainMenu?: () => void;
 }
 
 const mapTabs: Array<{ id: MapMode; label: string; icon: React.ElementType }> = [
@@ -188,6 +189,7 @@ export function EliteCockpitHud({
   onDock,
   onUndock,
   onToggleMining,
+  onExitToMainMenu,
 }: EliteCockpitHudProps) {
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({});
   const [modalTab, setModalTab] = useState<CockpitTab | null>(null);
@@ -257,6 +259,16 @@ export function EliteCockpitHud({
             </button>
           ))}
         </div>
+        {onExitToMainMenu && (
+          <button
+            type="button"
+            onClick={onExitToMainMenu}
+            className="w-full mt-2.5 py-1.5 rounded bg-rose-950/20 hover:bg-rose-900/45 border border-rose-900/60 text-rose-300 font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Power className="w-3.5 h-3.5 text-rose-500 fill-current" />
+            EJECT TO MENU
+          </button>
+        )}
       </HudPanel>
 
       <nav className="elite-top-nav" aria-label="Navigation and modes">

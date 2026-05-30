@@ -36,20 +36,32 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
   const arrivalDistance = input.arrivalDistance ?? 1_200_000;
   const arrivalSpeed = input.arrivalSpeed ?? 20;
   const safetyDistance = input.safetyDistance ?? 400_000;
-  const maxCruiseClosingSpeed = input.maxCruiseClosingSpeed ?? 8_000;
+  const maxCruiseClosingSpeed = input.maxCruiseClosingSpeed ?? 4500;
 
   const ux = distance > 0 ? -input.dx / distance : 1;
   const uy = distance > 0 ? -input.dy / distance : 0;
   const closingSpeed = input.relVx * ux + input.relVy * uy;
-  const effectiveStopDistance = Math.max(0, distance - arrivalDistance - safetyDistance);
-  const desiredClosingSpeed = Math.min(
-    maxCruiseClosingSpeed,
-    Math.sqrt(Math.max(0, 2 * maxAcceleration * effectiveStopDistance)),
+
+  // Crucial: effectiveStopDistance is the distance from the ship to the arrival boundary.
+  const effectiveStopDistance = Math.max(0, distance - arrivalDistance);
+
+  // We target a safe deceleration rate (e.g. 40% of maximum capability)
+  // to avoid overshooting under time-warp or low framerates.
+  const targetDecel = 0.4 * maxAcceleration;
+
+  // From physics: v^2 = u^2 + 2ad => v = sqrt(2ad + v_arrival^2)
+  const maxSafeClosingSpeed = Math.sqrt(
+    Math.max(0, 2 * targetDecel * effectiveStopDistance + arrivalSpeed * arrivalSpeed)
   );
+
+  // Limit desired speed to the client's comfortable cruise limit
+  const desiredClosingSpeed = Math.min(maxCruiseClosingSpeed, maxSafeClosingSpeed);
+
   const brakingDistance = closingSpeed > 0
-    ? (closingSpeed * closingSpeed) / (2 * maxAcceleration) + safetyDistance
+    ? (closingSpeed * closingSpeed) / (2 * targetDecel)
     : 0;
 
+  // 1. Arrived Check
   if (distance <= arrivalDistance && relSpeed <= arrivalSpeed) {
     return {
       phase: "arrived",
@@ -62,16 +74,28 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
     };
   }
 
-  const mustBrake = closingSpeed > 0 && (
-    brakingDistance >= Math.max(0, distance - arrivalDistance) ||
-    closingSpeed > desiredClosingSpeed + 50
-  );
+  // 2. Determine Phase
+  // We must brake if our relative speed towards target exceeds the desired speed limit,
+  // or if we are already inside the glide slope zone and closing too fast.
+  const isInsideGlideSlope = desiredClosingSpeed < maxCruiseClosingSpeed;
+  const mustBrake = closingSpeed > desiredClosingSpeed + 5 || (isInsideGlideSlope && closingSpeed > desiredClosingSpeed);
 
   if (mustBrake && relSpeed > arrivalSpeed) {
+    // Braking phase: Face the relative velocity vector (prograde relative velocity)
+    // and fire with a negative throttle (reverse thrusters) to decelerate opposite to motion.
+    const targetHeading = Math.atan2(input.relVy, input.relVx);
+    // Control throttle based on overspeed magnitude
+    const speedOvershoot = closingSpeed - desiredClosingSpeed;
+    const throttlePercent = -clamp(
+      (speedOvershoot / 150) * 80 + 20,
+      25,
+      100
+    );
+
     return {
       phase: "brake",
-      targetHeading: Math.atan2(-input.relVy, -input.relVx),
-      throttlePercent: clamp((relSpeed / Math.max(60, desiredClosingSpeed || arrivalSpeed)) * 70, 25, 100),
+      targetHeading,
+      throttlePercent,
       distance,
       closingSpeed,
       desiredClosingSpeed,
@@ -79,11 +103,32 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
     };
   }
 
-  if (closingSpeed < desiredClosingSpeed - 50) {
+  // 3. Stably coast or gently steer prograde if inside the glide slope zone but under-speed.
+  if (isInsideGlideSlope) {
+    return {
+      phase: "coast",
+      targetHeading: Math.atan2(input.relVy, input.relVx), // stay facing prograde velocity!
+      throttlePercent: 0,
+      distance,
+      closingSpeed,
+      desiredClosingSpeed,
+      brakingDistance,
+    };
+  }
+
+  // 4. Accelerate to Cruise Speed (if far away and below cruise speed)
+  if (closingSpeed < desiredClosingSpeed - 20) {
+    const speedDeficit = desiredClosingSpeed - closingSpeed;
+    const throttlePercent = clamp(
+      (speedDeficit / 400) * 80 + 20,
+      20,
+      95
+    );
+
     return {
       phase: "accelerate",
-      targetHeading: Math.atan2(uy, ux),
-      throttlePercent: clamp(((desiredClosingSpeed - closingSpeed) / Math.max(500, desiredClosingSpeed)) * 100, 20, 100),
+      targetHeading: Math.atan2(uy, ux), // face target directly (prograde)
+      throttlePercent,
       distance,
       closingSpeed,
       desiredClosingSpeed,
@@ -91,6 +136,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
     };
   }
 
+  // Default coast (e.g. cruising at top speed)
   return {
     phase: "coast",
     targetHeading: Math.atan2(uy, ux),
