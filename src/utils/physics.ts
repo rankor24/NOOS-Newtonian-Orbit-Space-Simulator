@@ -418,3 +418,34 @@ export function predictShipRoute(
 
   return points;
 }
+
+/**
+ * Resolves the maximum docking distance (absolute center distance) and
+ * maximum relative speed limit allowable for a celestial body and its station setup.
+ */
+export function getDockingSpecs(body: CelestialBody | null): { maxDistance: number; maxSpeed: number } {
+  if (!body) return { maxDistance: 1.2e6, maxSpeed: 600 };
+  
+  // Space tethers like Earth "Orbital Tether One" extend to geostationary orbit
+  if (body.stationName && (body.stationName.toLowerCase().includes("tether") || body.id === "sol_earth" || body.name === "Earth")) {
+    return {
+      maxDistance: body.radius + 36.0e6, // up to 36,000 km altitude (space tethers are massive)
+      maxSpeed: 2500, // up to 2,500 m/s relative speed
+    };
+  }
+
+  // Large celestial ports
+  if (body.type === "planet") {
+    return {
+      maxDistance: body.radius + 5.0e6, // up to 5,000 km altitude (more generous)
+      maxSpeed: 1500, // up to 1,500 m/s for easier maneuvering
+    };
+  }
+
+  // Moons or smaller asteroid bodies containing stations
+  return {
+    maxDistance: body.radius + 2.0e6, // up to 2,000 km altitude
+    maxSpeed: 1000, // up to 1,000 m/s
+  };
+}
+

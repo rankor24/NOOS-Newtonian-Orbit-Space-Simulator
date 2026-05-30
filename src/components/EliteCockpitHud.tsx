@@ -21,14 +21,14 @@ import {
   Zap,
 } from "lucide-react";
 import { CelestialBody, GameState, MissionLog, StarData } from "../types";
-import { OrbitMetrics } from "../utils/physics";
+import { OrbitMetrics, getDockingSpecs } from "../utils/physics";
 import { formatGameTime } from "../utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "../data/ships";
 import { AU } from "../data/stars";
 import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName } from "../utils/worldText";
 
 type CockpitTab = "nav" | "market" | "upgrades" | "contracts";
-type MapMode = "galaxy" | "star" | "ship" | "target";
+type MapMode = "star" | "ship" | "target";
 type UiTheme = "amber" | "blue" | "green" | "red";
 type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target";
 
@@ -64,7 +64,6 @@ interface EliteCockpitHudProps {
 }
 
 const mapTabs: Array<{ id: MapMode; label: string; icon: React.ElementType }> = [
-  { id: "galaxy", label: "GALAXY", icon: Globe },
   { id: "star", label: "STAR", icon: Compass },
   { id: "ship", label: "SHIP", icon: Ship },
   { id: "target", label: "TARGET", icon: Crosshair },
@@ -307,12 +306,27 @@ export function EliteCockpitHud({
                 <DataRow label="Rel Speed" value={`${Math.round(relativeOrbit.relSpeed).toLocaleString()} m/s`} />
               </>
             )}
-            {selectedBody.hasMarket && !gameState.isDocked && (
-              <>
-                <DataRow label="Dock Range" value={`${Math.round(dockingDistance / 1000).toLocaleString()} km`} tone={canDock ? "tone-cyan" : ""} />
-                <DataRow label="Dock Speed" value={`${Math.round(dockingRelativeSpeed).toLocaleString()} m/s`} tone={canDock ? "tone-cyan" : ""} />
-              </>
-            )}
+            {selectedBody.hasMarket && !gameState.isDocked && (() => {
+              const activeSpecs = getDockingSpecs(selectedBody);
+              const maxAltKm = Math.round((activeSpecs.maxDistance - selectedBody.radius) / 1000);
+              const currentAltKm = Math.round(Math.max(0, dockingDistance - selectedBody.radius) / 1000);
+              const rangeOk = currentAltKm < maxAltKm;
+              const speedOk = dockingRelativeSpeed < activeSpecs.maxSpeed;
+              return (
+                <>
+                  <DataRow
+                    label="Dock Range"
+                    value={`${currentAltKm.toLocaleString()} / Max ${maxAltKm.toLocaleString()} km`}
+                    tone={rangeOk ? "tone-cyan" : "text-zinc-500"}
+                  />
+                  <DataRow
+                    label="Dock Speed"
+                    value={`${Math.round(dockingRelativeSpeed).toLocaleString()} / Max ${activeSpecs.maxSpeed.toLocaleString()} m/s`}
+                    tone={speedOk ? "tone-cyan" : "text-zinc-500"}
+                  />
+                </>
+              );
+            })()}
             <div className="elite-button-grid">
               <button disabled={!canDock || gameState.isDocked} onClick={onDock}>
                 DOCK

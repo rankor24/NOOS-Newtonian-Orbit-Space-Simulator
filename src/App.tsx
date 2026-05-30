@@ -11,13 +11,12 @@ import { MainMenu } from "./components/MainMenu";
 import { createInitialState, createDefaultPlayerProfile, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "./data/ships";
 import { GameState, CelestialBody, SpaceContract, MissionLog, ShipState } from "./types";
-import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, buildBodyPositionCache, BodyPosCache } from "./utils/physics";
+import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, buildBodyPositionCache, BodyPosCache, getDockingSpecs } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
 import { computeApproachGuidance } from "./utils/autopilot";
 
-const GalacticMap = lazy(() => import("./components/GalacticMap").then((m) => ({ default: m.GalacticMap })));
 const MarketPanel = lazy(() => import("./components/MarketPanel").then((m) => ({ default: m.MarketPanel })));
 const UpgradesPanel = lazy(() => import("./components/UpgradesPanel").then((m) => ({ default: m.UpgradesPanel })));
 const ContractsPanel = lazy(() => import("./components/ContractsPanel").then((m) => ({ default: m.ContractsPanel })));
@@ -257,8 +256,8 @@ return fresh;
 const [profileSummaries, setProfileSummaries] = useState(() => listCommanderProfiles());
 const [isInMainMenu, setIsInMainMenu] = useState<boolean>(true);
 
-const [activeTab, setActiveTab] = useState<"nav" | "market" | "upgrades" | "contracts">("nav");
-const [mapMode, setMapMode] = useState<"galaxy" | "star" | "ship">("star");
+const [activeTab, setActiveTab] = useState<"market" | "upgrades" | "contracts">("market");
+const [mapMode, setMapMode] = useState<"star" | "ship" | "target">("star");
 const [isThrusting, setIsThrusting] = useState<boolean>(false);
 const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 
@@ -327,10 +326,11 @@ const dockingRelativeSpeed = selectedBody
 const targetBearing = selectedBodyPosition
 ? Math.atan2(selectedBodyPosition.y - gameState.ship.y, selectedBodyPosition.x - gameState.ship.x)
 : null;
+const dockingSpecs = getDockingSpecs(selectedBody);
 const canDockAtSelectedBody = !!selectedBody &&
 selectedBody.hasMarket &&
-dockingDistance < selectedBody.radius + DOCKING_RANGE_METERS &&
-dockingRelativeSpeed < DOCKING_MAX_REL_SPEED;
+dockingDistance < dockingSpecs.maxDistance &&
+dockingRelativeSpeed < dockingSpecs.maxSpeed;
 
 // Dominant orbital gravity source reference (uses frame cache)
 const posCacheForRender = posCacheRef.current;
@@ -674,14 +674,15 @@ const shipMass = current.ship.dryMass + current.ship.fuelLevel;
 const maxDecel = current.ship.engineThrust / shipMass;
 
 // Compute guidance using Newtonian flight assist equations
+const activeSpecs = getDockingSpecs(activeTargetBody);
 const guidance = computeApproachGuidance({
 dx,
 dy,
 relVx,
 relVy,
 maxAcceleration: maxDecel,
-arrivalDistance: bodyRadius + DOCKING_RANGE_METERS * 0.9,
-arrivalSpeed: 25,
+arrivalDistance: activeSpecs.maxDistance * 0.9,
+arrivalSpeed: Math.min(25, activeSpecs.maxSpeed * 0.1),
 safetyDistance: 400000,
 maxCruiseClosingSpeed: 4500,
 });
@@ -737,7 +738,7 @@ const actualThrottlePercent = updatedShip.fuelLevel > 0 && !isPowerLocked
 ? Math.max(-100, Math.min(100, throttleCommand * enginePowerScale))
 : 0;
 
-updatedShip.throttlePercent = actualThrottlePercent;
+updatedShip.throttlePercent = throttleCommand;
 updatedShip.battery = netBattery;
 
     // Physics motion solver step
@@ -1029,8 +1030,10 @@ addConsoleLog(`Disposed ${amount}t of ${resMarket.name} to refinery bay. Credite
 const handleDockActivate = () => {
 if (!selectedBody || !selectedBody.hasMarket) return;
 if (!canDockAtSelectedBody) {
+const activeSpecs = getDockingSpecs(selectedBody);
+const maxAltKm = Math.round((activeSpecs.maxDistance - selectedBody.radius) / 1000);
 addConsoleLog(
-`Docking denied by ${selectedBody.stationName || selectedBody.name}: close to within ${Math.round(DOCKING_RANGE_METERS / 1000).toLocaleString()} km and reduce relative speed below ${DOCKING_MAX_REL_SPEED.toLocaleString()} m/s.`,
+`Docking denied by ${selectedBody.stationName || selectedBody.name}: close to within ${maxAltKm.toLocaleString()} km altitude and reduce relative speed below ${activeSpecs.maxSpeed.toLocaleString()} m/s.`,
 "warning"
 );
 return;
@@ -1370,53 +1373,26 @@ powerDistribution: balancedDistribution,
 }));
 };
 
-const mapView = mapMode === "galaxy" ? (
-<Suspense fallback={<LazyPanelFallback />}>
-<div className="elite-galaxy-map-view">
-<GalacticMap
-ship={gameState.ship}
-activeStarId={gameState.activeStarId}
-interstellar={gameState.interstellar}
-onWarpToStar={handleWarpToStar}
-logs={[]}
-credits={gameState.playerCredits}
-uiTheme={uiTheme}
-compactView
-/>
-</div>
-</Suspense>
-) : (
-<StarSystemCanvas
-bodies={systemBodies}
-ship={gameState.ship}
-selectedBodyId={gameState.selectedBodyId}
-onSelectBody={(id) => setGameState((g) => ({ ...g, selectedBodyId: id }))}
-gameTime={gameState.gameTime}
-isThrusting={Math.abs(gameState.ship.throttlePercent) > 0 || autopilotMode !== "none"}
-miningActive={gameState.miningTargetId !== null}
-miningTargetId={gameState.miningTargetId}
-starColor={activeStar.color}
-uiTheme={uiTheme}
-cameraModeOverride={mapMode === "star" ? "star" : "ship"}
-hideCameraControls
-autopilotMode={autopilotMode}
-/>
+const mapView = (
+  <StarSystemCanvas
+    bodies={systemBodies}
+    ship={gameState.ship}
+    selectedBodyId={gameState.selectedBodyId}
+    onSelectBody={(id) => setGameState((g) => ({ ...g, selectedBodyId: id }))}
+    gameTime={gameState.gameTime}
+    isThrusting={Math.abs(gameState.ship.throttlePercent) > 0 || autopilotMode !== "none"}
+    miningActive={gameState.miningTargetId !== null}
+    miningTargetId={gameState.miningTargetId}
+    starColor={activeStar.color}
+    uiTheme={uiTheme}
+    cameraModeOverride={mapMode}
+    autopilotMode={autopilotMode}
+  />
 );
 
 const activePanel = (
-<Suspense fallback={<LazyPanelFallback />}>
-<>
-{activeTab === "nav" && (
-<GalacticMap
-ship={gameState.ship}
-activeStarId={gameState.activeStarId}
-interstellar={gameState.interstellar}
-onWarpToStar={handleWarpToStar}
-logs={[]}
-credits={gameState.playerCredits}
-uiTheme={uiTheme}
-/>
-)}
+  <Suspense fallback={<LazyPanelFallback />}>
+    <>
 <div className="space-y-4 mb-4">
 <ProfilePanel
 currentProfileId={gameState.profileId}

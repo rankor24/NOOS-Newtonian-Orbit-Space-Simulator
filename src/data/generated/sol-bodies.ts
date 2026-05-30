@@ -261,7 +261,11 @@ const SOL_PLUTO_MOONS: CelestialBody[] = [
 
 export const SOL_BODIES_GENERATED: CelestialBody[] = [
   ...SOL_MAJOR_BODIES,
-  ...SOL_MOONS_GENERATED,
+  ...SOL_MOONS_GENERATED.filter(
+    (b) => !(/^[Ss]\d/.test(b.name) || /^[Ss]\//.test(b.name) || /^[Ss]_\d/.test(b.name) || /\d{4}/.test(b.name) || /^[Ss]\s*\d/.test(b.name))
+  ),
   ...SOL_PLUTO_MOONS,
-  ...SOL_SMALL_BODIES_GENERATED,
+  ...SOL_SMALL_BODIES_GENERATED.filter(
+    (b) => !(/^[Ss]\d/.test(b.name) || /^[Ss]\//.test(b.name) || /^[Ss]_\d/.test(b.name) || /\d{4}/.test(b.name) || /^[Ss]\s*\d/.test(b.name))
+  ),
 ];

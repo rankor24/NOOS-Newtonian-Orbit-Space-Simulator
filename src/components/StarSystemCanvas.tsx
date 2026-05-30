@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Compass, Crosshair, Move, Zap } from "lucide-react";
+import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
 import { CelestialBody, ShipState, SystemFeature } from "../types";
 import { getAbsoluteBodyPosition, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, getCachedPosition, BodyPosCache } from "../utils/physics";
 
@@ -20,12 +20,12 @@ interface CanvasProps {
   starColor: string;
   systemFeatures?: SystemFeature[];
   uiTheme?: "amber" | "blue" | "green" | "red";
-  cameraModeOverride?: "ship" | "target" | "star";
+  cameraModeOverride?: "ship" | "target" | "star" | "fit";
   hideCameraControls?: boolean;
 }
 type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target";
 
-type CameraMode = "ship" | "target" | "star";
+type CameraMode = "ship" | "target" | "star" | "fit";
 type Point = { x: number; y: number };
 
 const AU = 1.496e11;
@@ -175,8 +175,10 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   autopilotMode = "none",
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [zoomExponent, setZoomExponent] = useState(DEFAULT_ZOOM_EXPONENT);
+  const [baseZoomExponent, setZoomExponent] = useState(DEFAULT_ZOOM_EXPONENT);
   const [cameraMode, setCameraMode] = useState<CameraMode>("star");
+  const cameraModeRef = useRef<CameraMode>("star");
+  cameraModeRef.current = cameraMode;
   const [cameraCenter, setCameraCenter] = useState<Point>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<Point>({ x: 0, y: 0 });
@@ -184,6 +186,10 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const dragMovedRef = useRef(false);
   const drawCacheRef = useRef<BodyPosCache>(new Map());
   const routeFrameCounter = useRef(0);
+  const lastRouteRef = useRef<{ x: number; y: number }[]>([]);
+
+  const lastRenderedCenterRef = useRef<Point>({ x: 0, y: 0 });
+  const lastRenderedScaleRef = useRef<number>(Math.pow(10, DEFAULT_ZOOM_EXPONENT));
 
   const getBodyPos = (bodyId: string): Point => {
     const cached = drawCacheRef.current.get(bodyId);
@@ -192,13 +198,82 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   };
 
   const palette = THEME[uiTheme];
-  const scale = Math.pow(10, zoomExponent);
+  const baseScale = Math.pow(10, baseZoomExponent);
   const selectedBody = selectedBodyId ? bodies.find((body) => body.id === selectedBodyId) ?? null : null;
+
+  // Dynamically resolve target center and scale
+  const resolved = useMemo(() => {
+    let modeCenter = cameraCenter;
+    let modeScale = baseScale;
+    let modeExponent = baseZoomExponent;
+
+    if (cameraMode === "ship") {
+      modeCenter = { x: ship.x, y: ship.y };
+    } else if (cameraMode === "target" && selectedBodyId) {
+      modeCenter = getBodyPos(selectedBodyId);
+    } else if (cameraMode === "fit") {
+      // Fit target is selectedBody if exists, or closest celestial body (non-star preferred)
+      let fitTarget = selectedBody;
+      if (!fitTarget && bodies.length > 0) {
+        const candidateBodies = bodies.filter(b => b.type !== 'star');
+        const searchList = candidateBodies.length > 0 ? candidateBodies : bodies;
+        fitTarget = searchList.reduce((prev, curr) => {
+          const posP = getBodyPos(prev.id);
+          const posC = getBodyPos(curr.id);
+          const dP = Math.hypot(ship.x - posP.x, ship.y - posP.y);
+          const dC = Math.hypot(ship.x - posC.x, ship.y - posC.y);
+          return dC < dP ? curr : prev;
+        }, searchList[0]);
+      }
+
+      if (fitTarget) {
+        const targetPos = getBodyPos(fitTarget.id);
+        modeCenter = {
+          x: (ship.x + targetPos.x) / 2,
+          y: (ship.y + targetPos.y) / 2,
+        };
+
+        const dX = Math.abs(ship.x - targetPos.x);
+        const dY = Math.abs(ship.y - targetPos.y);
+
+        const boundingRadius = fitTarget.radius ?? 1000;
+        const paddingMeters = Math.max(boundingRadius * 4, 30_000); // minimum 30km padding so they aren't right on top
+        const spanX = dX + paddingMeters;
+        const spanY = dY + paddingMeters;
+
+        // Dynamic viewport scale fitting
+        const canvas = canvasRef.current;
+        const rect = canvas?.getBoundingClientRect();
+        const width = rect?.width || canvas?.clientWidth || 800;
+        const height = rect?.height || canvas?.clientHeight || 500;
+
+        const requiredScaleX = (width * 0.65) / spanX;
+        const requiredScaleY = (height * 0.65) / spanY;
+        const targetScale = Math.min(requiredScaleX, requiredScaleY);
+        
+        modeExponent = clampZoomExponent(Math.log10(targetScale));
+        modeScale = Math.pow(10, modeExponent);
+      } else {
+        modeCenter = { x: ship.x, y: ship.y };
+      }
+    }
+
+    lastRenderedCenterRef.current = modeCenter;
+    lastRenderedScaleRef.current = modeScale;
+
+    return { center: modeCenter, scale: modeScale, exponent: modeExponent };
+  }, [cameraMode, cameraCenter, baseScale, baseZoomExponent, ship.x, ship.y, selectedBodyId, selectedBody, bodies, gameTime]);
+
+  const scale = resolved.scale;
+  const zoomExponent = resolved.exponent;
 
   const getFocusCenter = (mode: CameraMode): Point => {
     if (mode === "ship") return { x: ship.x, y: ship.y };
     if (mode === "target" && selectedBodyId) {
       return getBodyPos(selectedBodyId);
+    }
+    if (mode === "fit") {
+      return resolved.center;
     }
     return { x: 0, y: 0 };
   };
@@ -356,6 +431,18 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const drawOrbit = (ctx: CanvasRenderingContext2D, body: CelestialBody, center: Point, width: number, height: number) => {
     if (!body.parentId) return;
     const parentPos = getBodyPos(body.parentId);
+
+    // Math-based O(1) Viewport culling to skip drawing orbits that are completely offscreen
+    const dx = parentPos.x - center.x;
+    const dy = parentPos.y - center.y;
+    const parentDistWorld = Math.hypot(dx, dy);
+    const screenRadiusWorld = Math.hypot(width, height) / (2 * scale);
+    const orbitMaxWorld = body.semiMajorAxis * (1 + body.eccentricity);
+    const orbitMinWorld = body.semiMajorAxis * (1 - body.eccentricity);
+
+    if (parentDistWorld - screenRadiusWorld > orbitMaxWorld) return;
+    if (parentDistWorld + screenRadiusWorld < orbitMinWorld) return;
+
     const orbitRadiusPx = body.semiMajorAxis * scale;
     const selected = body.id === selectedBodyId;
     const moonTooSmall = body.type === "moon" && orbitRadiusPx < 8 && !selected;
@@ -514,70 +601,72 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const drawRoute = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
     // Throttle: only recompute route every 10 frames for performance
     routeFrameCounter.current++;
-    if (routeFrameCounter.current % 10 !== 0) return;
+    if (routeFrameCounter.current % 10 === 0 || lastRouteRef.current.length === 0) {
+      // Compute effective throttle and heading for route prediction based on autopilot mode.
+      // The route trace should reflect where the autopilot is actually steering, not just coasting.
+      let routeThrottle = 0;
+      let routeHeading = ship.heading;
 
-    // Compute effective throttle and heading for route prediction based on autopilot mode.
-    // The route trace should reflect where the autopilot is actually steering, not just coasting.
-    let routeThrottle = 0;
-    let routeHeading = ship.heading;
+      if (autopilotMode === "approach-target" && selectedBodyId) {
+        const targetBody = bodies.find((b) => b.id === selectedBodyId);
+        if (targetBody) {
+          const targetPos = getBodyPos(targetBody.id);
+          const dx = ship.x - targetPos.x;
+          const dy = ship.y - targetPos.y;
+          const dist = Math.hypot(dx, dy);
+          // Approximate target velocity numerically
+          const p1 = getBodyPos(targetBody.id);
+          const p2 = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime + 1);
+          const targetVx = p2.x - p1.x;
+          const targetVy = p2.y - p1.y;
+          const relVx = ship.vx - targetVx;
+          const relVy = ship.vy - targetVy;
+          const relSpeed = Math.hypot(relVx, relVy);
+          const bodyRadius = targetBody.radius ?? 0;
+          const altitude = Math.max(0, dist - bodyRadius);
+          // Simple braking distance estimate (surface-relative)
+          const shipMass = ship.dryMass + ship.fuelLevel;
+          const maxDecel = ship.engineThrust / shipMass;
+          const surfaceBrakingDist = (relSpeed * relSpeed) / (2 * 0.85 * maxDecel) + 500000;
 
-    if (autopilotMode === "approach-target" && selectedBodyId) {
-      const targetBody = bodies.find((b) => b.id === selectedBodyId);
-      if (targetBody) {
-        const targetPos = getBodyPos(targetBody.id);
-        const dx = ship.x - targetPos.x;
-        const dy = ship.y - targetPos.y;
-        const dist = Math.hypot(dx, dy);
-        // Approximate target velocity numerically
-        const p1 = getBodyPos(targetBody.id);
-        const p2 = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime + 1);
-        const targetVx = p2.x - p1.x;
-        const targetVy = p2.y - p1.y;
-        const relVx = ship.vx - targetVx;
-        const relVy = ship.vy - targetVy;
-        const relSpeed = Math.hypot(relVx, relVy);
-        const bodyRadius = targetBody.radius ?? 0;
-        const altitude = Math.max(0, dist - bodyRadius);
-        // Simple braking distance estimate (surface-relative)
-        const shipMass = ship.dryMass + ship.fuelLevel;
-        const maxDecel = ship.engineThrust / shipMass;
-        const surfaceBrakingDist = (relSpeed * relSpeed) / (2 * 0.85 * maxDecel) + 500000;
-
-        if (altitude <= surfaceBrakingDist) {
-          // Decel phase: point toward target, reverse thrust (matches autopilot).
-          routeHeading = Math.atan2(-dy, -dx);
-          routeThrottle = -Math.min(100, (relSpeed / 120) * 10);
-        } else {
-          // Accel phase: burn toward target
-          routeHeading = Math.atan2(-dy, -dx);
-          routeThrottle = 90;
+          if (altitude <= surfaceBrakingDist) {
+            // Decel phase: point toward target, reverse thrust (matches autopilot).
+            routeHeading = Math.atan2(-dy, -dx);
+            routeThrottle = -Math.min(100, (relSpeed / 120) * 10);
+          } else {
+            // Accel phase: burn toward target
+            routeHeading = Math.atan2(-dy, -dx);
+            routeThrottle = 90;
+          }
         }
-      }
-    } else if (autopilotMode === "match-speed" && selectedBodyId) {
-      const targetBody = bodies.find((b) => b.id === selectedBodyId);
-      if (targetBody) {
-        const p1 = getBodyPos(targetBody.id);
-        const p2 = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime + 1);
-        const targetVx = p2.x - p1.x;
-        const targetVy = p2.y - p1.y;
-        const relVx = ship.vx - targetVx;
-        const relVy = ship.vy - targetVy;
-        routeHeading = Math.atan2(-relVy, -relVx);
+      } else if (autopilotMode === "match-speed" && selectedBodyId) {
+        const targetBody = bodies.find((b) => b.id === selectedBodyId);
+        if (targetBody) {
+          const p1 = getBodyPos(targetBody.id);
+          const p2 = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime + 1);
+          const targetVx = p2.x - p1.x;
+          const targetVy = p2.y - p1.y;
+          const relVx = ship.vx - targetVx;
+          const relVy = ship.vy - targetVy;
+          routeHeading = Math.atan2(-relVy, -relVx);
+          routeThrottle = 40;
+        }
+      } else if (autopilotMode === "circularize") {
         routeThrottle = 40;
       }
-    } else if (autopilotMode === "circularize") {
-      routeThrottle = 40;
+
+      lastRouteRef.current = predictShipRoute(
+        { ...ship, heading: routeHeading },
+        bodies,
+        gameTime,
+        86400 * 4,
+        24,       // reduced from 72 — enough for visual trace, much cheaper
+        routeThrottle
+        // No cache — prediction sub-steps need accurate per-step body positions
+      );
     }
 
-    const route = predictShipRoute(
-      { ...ship, heading: routeHeading },
-      bodies,
-      gameTime,
-      86400 * 4,
-      24,       // reduced from 72 — enough for visual trace, much cheaper
-      routeThrottle
-      // No cache — prediction sub-steps need accurate per-step body positions
-    );
+    const route = lastRouteRef.current;
     if (route.length < 2) return;
 
     ctx.strokeStyle = `${palette.accent}88`;
@@ -618,15 +707,22 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     const width = rect.width || 800;
     const height = rect.height || 500;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const targetWidth = Math.round(width * dpr);
+    const targetHeight = Math.round(height * dpr);
+
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    } else {
+      ctx.clearRect(0, 0, width, height);
+    }
 
     // Build position cache once per frame for all draw calls
     const drawCache = buildBodyPositionCache(bodies, gameTime);
     drawCacheRef.current = drawCache;
 
-    const center = cameraCenter;
+    const center = resolved.center;
     drawBackground(ctx, width, height);
     drawGrid(ctx, center, width, height);
 
@@ -677,7 +773,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     miningActive,
     miningTargetId,
     palette,
-    cameraCenter,
+    resolved.center,
     revealedBodyIds,
     scale,
     selectedBody,
@@ -690,7 +786,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
 
   const findBodyAtScreenPoint = (screen: Point) => {
     const { width, height } = getCanvasViewport();
-    const center = cameraCenter;
+    const center = resolved.center;
     let found: string | null = null;
     let bestDistance = 28;
 
@@ -738,10 +834,22 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     if (isDragging) {
       const dx = event.clientX - dragStart.x;
       const dy = event.clientY - dragStart.y;
-      if (Math.hypot(dx, dy) > 3) dragMovedRef.current = true;
+      if (Math.hypot(dx, dy) > 3) {
+        dragMovedRef.current = true;
+        if (cameraMode !== "star") {
+          setCameraMode("star");
+          const initCenter = lastRenderedCenterRef.current;
+          setCameraCenter({
+            x: initCenter.x - dx / lastRenderedScaleRef.current,
+            y: initCenter.y - dy / lastRenderedScaleRef.current,
+          });
+          setDragStart({ x: event.clientX, y: event.clientY });
+          return;
+        }
+      }
       setCameraCenter((current) => ({
-        x: current.x - dx / scale,
-        y: current.y - dy / scale,
+        x: current.x - dx / lastRenderedScaleRef.current,
+        y: current.y - dy / lastRenderedScaleRef.current,
       }));
       setDragStart({ x: event.clientX, y: event.clientY });
       return;
@@ -769,19 +877,29 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
           : 1;
       const zoomRatio = Math.exp(-event.deltaY * multiplier * 0.0012);
 
-      setZoomExponent((currentExponent) => {
-        const oldScale = Math.pow(10, currentExponent);
-        const nextExponent = clampZoomExponent(Math.log10(oldScale * zoomRatio));
-        const newScale = Math.pow(10, nextExponent);
-        setCameraCenter((currentCenter) => {
-          const worldBefore = toWorld(pointer, currentCenter, width, height, oldScale);
-          return {
-            x: worldBefore.x - (pointer.x - width / 2) / newScale,
-            y: worldBefore.y - (pointer.y - height / 2) / newScale,
-          };
+      const currentRenderedCenter = lastRenderedCenterRef.current;
+      const currentRenderedScale = lastRenderedScaleRef.current;
+      const currentMode = cameraModeRef.current;
+
+      if (currentMode !== "star") {
+        setZoomExponent((currentExponent) => {
+          const oldScale = currentRenderedScale;
+          const nextExponent = clampZoomExponent(Math.log10(oldScale * zoomRatio));
+          setCameraCenter(currentRenderedCenter);
+          return nextExponent;
         });
-        return nextExponent;
-      });
+      } else {
+        setZoomExponent((currentExponent) => {
+          const oldScale = currentRenderedScale;
+          const nextExponent = clampZoomExponent(Math.log10(oldScale * zoomRatio));
+          const newScale = Math.pow(10, nextExponent);
+          setCameraCenter({
+            x: currentRenderedCenter.x + (pointer.x - width / 2) * (1 / oldScale - 1 / newScale),
+            y: currentRenderedCenter.y + (pointer.y - height / 2) * (1 / oldScale - 1 / newScale),
+          });
+          return nextExponent;
+        });
+      }
     };
 
     canvas.addEventListener("wheel", handleWheel, { passive: false });
@@ -818,6 +936,15 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
               <Crosshair className="h-3.5 w-3.5" />
               TARGET
             </button>
+            <button
+              type="button"
+              onClick={() => setMode("fit")}
+              className={`flex items-center gap-1 rounded px-2 py-1 transition ${cameraMode === "fit" ? "bg-emerald-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
+              title="Auto-zoom to fit ship and nearest body or target in view"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+              FIT
+            </button>
           </div>
 
           <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-950/88 px-2 py-1.5 text-xs shadow-lg backdrop-blur">
@@ -828,7 +955,9 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
               max={MAX_ZOOM_EXPONENT}
               step="0.05"
               value={zoomExponent}
-              onChange={(event) => setZoomExponent(clampZoomExponent(Number(event.target.value)))}
+              onChange={(event) => {
+                setZoomExponent(clampZoomExponent(Number(event.target.value)));
+              }}
               className="w-28 accent-sky-500"
             />
             <button
