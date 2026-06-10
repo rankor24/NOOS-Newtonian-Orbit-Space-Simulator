@@ -2,7 +2,7 @@ import { Dispatch, MutableRefObject, SetStateAction, useEffect, useState } from 
 import { DEFAULT_POWER_DISTRIBUTION } from "../../data/ships";
 import { GameState } from "../../types";
 
-type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target";
+type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target";
 
 export interface PressedKeysState {
   thrust: boolean;
@@ -115,10 +115,10 @@ export function useCockpitControls({
       const key = e.key.toLowerCase();
 
       if (key === "arrowleft" || key === "a") {
-        handleRotateShip(-Math.PI / 36);
+        setAutopilotMode("none");
         setPressedKeys((prev) => ({ ...prev, steerLeft: true }));
       } else if (key === "arrowright" || key === "d") {
-        handleRotateShip(Math.PI / 36);
+        setAutopilotMode("none");
         setPressedKeys((prev) => ({ ...prev, steerRight: true }));
       } else if (key === "arrowup" || key === "w") {
         e.preventDefault();

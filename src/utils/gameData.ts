@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { GameState, ResourceMarket, MarketState, SpaceContract, ShipUpgrade, ShipState, PlayerProfile, OwnedShipRecord } from "../types";
+import { GameState, ResourceMarket, MarketState, SpaceContract, ShipUpgrade, ShipState, PlayerProfile, OwnedShipRecord, CelestialBody } from "../types";
 import { STARS, AU } from "../data/stars";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "../data/ships";
+import { getAbsoluteBodyPosition, getBodyVelocity } from "./physics";
 import {
   getAllPortsForBodies,
   getPortContractTemplates,
@@ -13,6 +14,9 @@ import {
   makePortContract,
 } from "./worldText";
 import { SAVE_VERSION } from "./saveSystem";
+
+const START_STATION_ID = "station_earth_low";
+const START_PORT_ID = "station_earth_low";
 
 export const RESOURCE_TYPES = [
   { id: "water", name: "Water Ice", basePrice: 150, mass: 1000, desc: "Liquid water ice blocks mined from space craters." },
@@ -135,6 +139,9 @@ export function generateMarketsForStar(starId: string): { [portId: string]: { [r
   for (const port of ports) {
     const body = star.planets.find((entry) => entry.id === port.bodyId);
     if (!body) continue;
+    const economyBody = body.type === "station" && body.parentId
+      ? star.planets.find((entry) => entry.id === body.parentId) || body
+      : body;
 
     const market: { [resId: string]: ResourceMarket } = {};
     const profile = getPortMarketProfile(port);
@@ -143,27 +150,27 @@ export function generateMarketsForStar(starId: string): { [portId: string]: { [r
       let buyCoeff = 1.0;
       let capacityCoeff = 1.0;
 
-      if (body.id === "sol_earth") {
+      if (economyBody.id === "sol_earth") {
         if (res.id === "machinery") buyCoeff = 0.5;
         if (res.id === "luxury") buyCoeff = 0.7;
         if (res.id === "ore" || res.id === "water") buyCoeff = 1.6;
         capacityCoeff = 3.0;
-      } else if (body.id === "sol_mars") {
+      } else if (economyBody.id === "sol_mars") {
         if (res.id === "ore") buyCoeff = 0.4;
         if (res.id === "machinery") buyCoeff = 1.3;
         if (res.id === "water") buyCoeff = 1.2;
-      } else if (body.id === "sol_luna") {
+      } else if (economyBody.id === "sol_luna" || economyBody.id === "sol_moon") {
         if (res.id === "fuel") buyCoeff = 0.6;
         if (res.id === "machinery") buyCoeff = 1.2;
-      } else if (body.id === "sol_ceres") {
+      } else if (economyBody.id === "sol_ceres") {
         if (res.id === "water" || res.id === "ore") buyCoeff = 0.3;
         if (res.id === "machinery" || res.id === "luxury" || res.id === "fuel") buyCoeff = 1.8;
-      } else if (body.type === "station" && body.id.includes("jupiter")) {
+      } else if (body.type === "station" && (body.id.includes("jupiter") || economyBody.id === "sol_jupiter" || economyBody.parentId === "sol_jupiter")) {
         if (res.id === "fuel") buyCoeff = 0.4;
         if (res.id === "he3") buyCoeff = 0.2;
         if (res.id === "luxury") buyCoeff = 2.0;
       } else {
-        if (body.description.toLowerCase().includes("gas")) {
+        if (economyBody.description.toLowerCase().includes("gas")) {
           if (res.id === "fuel" || res.id === "he3") buyCoeff = 0.4;
           if (res.id === "luxury") buyCoeff = 1.8;
         } else {
@@ -295,6 +302,7 @@ export function createStarterShip(): ShipState {
     heading: Math.PI / 2,
     throttlePercent: 0,
     powerDistribution: DEFAULT_POWER_DISTRIBUTION,
+    // Preserved for old saves/catalog flavor only; physics does not cap Newtonian velocity.
     maxCruiseSpeed: SIDEWINDER_STARTER_PROFILE.baseCruiseSpeed,
     maxBoostSpeed: SIDEWINDER_STARTER_PROFILE.baseBoostSpeed,
     baseShieldStrength: SIDEWINDER_STARTER_PROFILE.baseShieldStrength,
@@ -321,19 +329,45 @@ export function createStarterShip(): ShipState {
   };
 }
 
+function placeShipNearBody(ship: ShipState, bodies: CelestialBody[], bodyId: string, gameTime: number): ShipState {
+  const body = bodies.find((entry) => entry.id === bodyId);
+  if (!body) return ship;
+
+  const bodyPos = getAbsoluteBodyPosition(body.id, bodies, gameTime);
+  const bodyVelocity = getBodyVelocity(body.id, bodies, gameTime);
+  const parentPos = body.parentId ? getAbsoluteBodyPosition(body.parentId, bodies, gameTime) : { x: 0, y: 0 };
+  const awayX = bodyPos.x - parentPos.x;
+  const awayY = bodyPos.y - parentPos.y;
+  const awayLength = Math.hypot(awayX, awayY);
+  const ux = awayLength > 1 ? awayX / awayLength : 1;
+  const uy = awayLength > 1 ? awayY / awayLength : 0;
+  const parkingDistance = (body.radius ?? 0) + 180_000;
+
+  return {
+    ...ship,
+    x: bodyPos.x + ux * parkingDistance,
+    y: bodyPos.y + uy * parkingDistance,
+    vx: bodyVelocity.vx,
+    vy: bodyVelocity.vy,
+    heading: Math.atan2(-uy, -ux),
+    throttlePercent: 0,
+  };
+}
+
 export function createInitialState(commanderName = "Commander"): GameState {
   const initialMarkets: MarketState = {};
   STARS.forEach((s) => {
     Object.assign(initialMarkets, generateMarketsForStar(s.id));
   });
 
-  const initialShip = createStarterShip();
+  const sol = STARS.find((star) => star.id === "star_sol") || STARS[0];
+  const initialShip = placeShipNearBody(createStarterShip(), sol.planets, START_STATION_ID, 0);
   const shipRecord: OwnedShipRecord = {
     id: initialShip.id || "starter_sidewinder_ship",
     hullId: initialShip.hullId || SIDEWINDER_STARTER_PROFILE.id,
     name: initialShip.name,
     ship: initialShip,
-    homePortId: "base_earth_1",
+    homePortId: START_PORT_ID,
   };
 
   return {
@@ -358,11 +392,11 @@ export function createInitialState(commanderName = "Commander"): GameState {
     logs: [
       {
         timestamp: "Year 2086, Day 01 - 00:00:00",
-        text: `Log initialized. ${commanderName} online in Sidewinder-class starter ship. Build credits, rank, and logistics capability across the Sol starter loop.`,
+        text: `Log initialized. ${commanderName} online in Sidewinder-class starter ship near Orbital Tether One high Earth orbit.`,
         type: "info",
       },
     ],
-    selectedBodyId: "sol_earth",
+    selectedBodyId: START_STATION_ID,
     miningTargetId: null,
     isDocked: false,
     dockedBodyId: null,

@@ -55,8 +55,8 @@ export const createCustomInitialState = (
     ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 0, luxuries: 0, he3: 1 };
   }
 
-  let startBodyId = "sol_earth";
-  let startPortId = "base_earth_1";
+  let startBodyId = tempState.selectedBodyId || "station_earth_low";
+  let startPortId = tempState.ownedShips[0]?.homePortId || "station_earth_low";
   const activePlayableStar = getOrCreatePlayableStar(starId) || STARS[0];
   const starPlanets = activePlayableStar.planets;
 

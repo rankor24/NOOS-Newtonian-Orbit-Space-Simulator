@@ -1,0 +1,337 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="100%" height="100%">
+  <defs>
+    <!-- Glow Filters -->
+    <filter id="glow-cyan" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="glow-orange" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="glow-red" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="glow-soft-white" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <!-- Cosmic Nebulae Gradients -->
+    <radialGradient id="nebula-cyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00f3ff" stop-opacity="0.15" />
+      <stop offset="50%" stop-color="#00aaff" stop-opacity="0.05" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="nebula-magenta" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#d946ef" stop-opacity="0.12" />
+      <stop offset="60%" stop-color="#701a75" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="slot-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00f3ff" stop-opacity="0.6" />
+      <stop offset="40%" stop-color="#00aaff" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Station Hull Metallic Gradients -->
+    <linearGradient id="metal-plate-1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="metal-plate-2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+
+    <!-- Engine Trails -->
+    <linearGradient id="engine-trail-cyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f3ff" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#00f3ff" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="engine-trail-orange" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff7b00" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#ff7b00" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- Reusable Detailed Structural Spoke -->
+    <g id="spoke">
+      <line x1="-6" y1="-130" x2="-6" y2="-240" stroke="#00f3ff" stroke-width="1.5" opacity="0.6" />
+      <line x1="6" y1="-130" x2="6" y2="-240" stroke="#00f3ff" stroke-width="1.5" opacity="0.6" />
+      <polyline points="-6,-130 6,-140 -6,-150 6,-160 -6,-170 6,-180 -6,-190 6,-200 -6,-210 6,-220 -6,-230 6,-240" fill="none" stroke="#00f3ff" stroke-width="1" opacity="0.4" />
+      <line x1="0" y1="-130" x2="0" y2="-240" stroke="#ff7b00" stroke-width="1" opacity="0.7" stroke-dasharray="4, 12" />
+    </g>
+
+    <!-- Reusable Detailed Docking Pier with Ships -->
+    <g id="docking-pier">
+      <!-- Connection to station -->
+      <rect x="-8" y="-255" width="16" height="15" fill="#1e293b" stroke="#334155" stroke-width="1.5" />
+      <line x1="0" y1="-255" x2="0" y2="-410" stroke="#475569" stroke-width="4" />
+      
+      <!-- Gantry Lattice Structure -->
+      <path d="M -12,-255 L 12,-280 M 12,-255 L -12,-280 
+               M -12,-280 L 12,-305 M 12,-280 L -12,-305 
+               M -12,-305 L 12,-330 M 12,-305 L -12,-330 
+               M -12,-330 L 12,-355 M 12,-330 L -12,-355 
+               M -12,-355 L 12,-380 M 12,-355 L -12,-380
+               M -12,-380 L 12,-405 M 12,-380 L -12,-405" 
+            fill="none" stroke="#334155" stroke-width="1" opacity="0.8" />
+      
+      <!-- Side Rails -->
+      <line x1="-12" y1="-255" x2="-12" y2="-410" stroke="#475569" stroke-width="1.5" />
+      <line x1="12" y1="-255" x2="12" y2="-410" stroke="#475569" stroke-width="1.5" />
+
+      <!-- Spire Warning Lights -->
+      <circle cx="0" cy="-285" r="1.2" fill="#ff7b00" />
+      <circle cx="0" cy="-340" r="1.2" fill="#ff7b00" />
+
+      <!-- Primary Docking Platform (Lower) -->
+      <line x1="-50" y1="-310" x2="50" y2="-310" stroke="#1e293b" stroke-width="4" />
+      <line x1="-50" y1="-310" x2="50" y2="-310" stroke="#00f3ff" stroke-width="1" opacity="0.8" />
+      <!-- Platform Lights -->
+      <circle cx="-50" cy="-310" r="2" fill="#ff3b30" filter="url(#glow-red)" />
+      <circle cx="50" cy="-310" r="2" fill="#4cd964" filter="url(#glow-cyan)" />
+
+      <!-- Secondary Docking Platform (Upper) -->
+      <line x1="-60" y1="-370" x2="60" y2="-370" stroke="#1e293b" stroke-width="4" />
+      <line x1="-60" y1="-370" x2="60" y2="-370" stroke="#00f3ff" stroke-width="1" opacity="0.8" />
+      <!-- Platform Lights -->
+      <circle cx="-60" cy="-370" r="2" fill="#ff3b30" filter="url(#glow-red)" />
+      <circle cx="60" cy="-370" r="2" fill="#4cd964" filter="url(#glow-cyan)" />
+
+      <!-- Docked Ship 1 (Left, Lower Platform) - Sleek Fighter/Shuttle -->
+      <g transform="translate(-30, -310)">
+        <!-- Umbilical/Docking clamp -->
+        <line x1="0" y1="0" x2="0" y2="-8" stroke="#ff7b00" stroke-width="1.5" />
+        <!-- Ship Body -->
+        <path d="M -10,-8 L 10,-8 L 6,-28 L 0,-38 L -6,-28 Z" fill="#0f172a" stroke="#38bdf8" stroke-width="1" />
+        <!-- Wings -->
+        <path d="M -10,-8 L -18,-14 L -10,-18 Z" fill="#1e293b" stroke="#38bdf8" stroke-width="1" />
+        <path d="M 10,-8 L 18,-14 L 10,-18 Z" fill="#1e293b" stroke="#38bdf8" stroke-width="1" />
+        <!-- Engine Glow (Off/Standby - soft orange) -->
+        <circle cx="-5" cy="-6" r="1" fill="#ff7b00" opacity="0.7" />
+        <circle cx="5" cy="-6" r="1" fill="#ff7b00" opacity="0.7" />
+      </g>
+
+      <!-- Cargo Container (Right, Lower Platform) -->
+      <g transform="translate(30, -310)">
+        <line x1="0" y1="0" x2="0" y2="-6" stroke="#475569" stroke-width="2" />
+        <rect x="-8" y="-20" width="16" height="14" rx="1" fill="#b45309" stroke="#f59e0b" stroke-width="1" />
+        <line x1="-4" y1="-20" x2="-4" y2="-6" stroke="#78350f" stroke-width="1" />
+        <line x1="4" y1="-20" x2="4" y2="-6" stroke="#78350f" stroke-width="1" />
+      </g>
+
+      <!-- Docked Ship 2 (Right, Upper Platform) - Heavy Freighter -->
+      <g transform="translate(35, -370)">
+        <!-- Clamp -->
+        <line x1="0" y1="0" x2="0" y2="-10" stroke="#ff7b00" stroke-width="2" />
+        <!-- Ship Body (Asymmetrical/Industrial) -->
+        <rect x="-12" y="-35" width="24" height="25" rx="2" fill="#334155" stroke="#94a3b8" stroke-width="1.5" />
+        <!-- Cargo Pods on sides -->
+        <rect x="-18" y="-30" width="6" height="16" rx="1" fill="#0891b2" stroke="#00f3ff" stroke-width="1" />
+        <rect x="12" y="-30" width="6" height="16" rx="1" fill="#0891b2" stroke="#00f3ff" stroke-width="1" />
+        <!-- Nose Cone -->
+        <path d="M -12,-35 L 12,-35 L 0,-47 Z" fill="#1e293b" stroke="#94a3b8" stroke-width="1" />
+        <!-- Cockpit Glow -->
+        <rect x="-4" y="-38" width="8" height="2" fill="#00f3ff" filter="url(#glow-cyan)" />
+      </g>
+
+      <!-- Docked Ship 3 (At the very tip, Center) - Large Explorer/Corvette -->
+      <g transform="translate(0, -410)">
+        <!-- Docking Collar -->
+        <rect x="-6" y="-5" width="12" height="5" fill="#475569" stroke="#00f3ff" stroke-width="1" />
+        <!-- Main Hull -->
+        <path d="M -14,-5 L 14,-5 L 8,-45 L 0,-60 L -8,-45 Z" fill="#020617" stroke="#00f3ff" stroke-width="1.5" />
+        <!-- Engine Nacelles -->
+        <path d="M -14,-5 L -22,-15 L -18,-25 L -10,-15 Z" fill="#1e293b" stroke="#00f3ff" stroke-width="1" />
+        <path d="M 14,-5 L 22,-15 L 18,-25 L 10,-15 Z" fill="#1e293b" stroke="#00f3ff" stroke-width="1" />
+        <!-- Radiator Panels / Solar Fins on Ship -->
+        <line x1="-18" y1="-25" x2="-28" y2="-35" stroke="#38bdf8" stroke-width="1" />
+        <line x1="-16" y1="-20" x2="-26" y2="-30" stroke="#38bdf8" stroke-width="1" />
+        <line x1="18" y1="-25" x2="28" y2="-35" stroke="#38bdf8" stroke-width="1" />
+        <line x1="16" y1="-20" x2="26" y2="-30" stroke="#38bdf8" stroke-width="1" />
+        <!-- Active Beacon on Ship Nose -->
+        <circle cx="0" cy="-60" r="2" fill="#ffffff" filter="url(#glow-soft-white)" />
+      </g>
+    </g>
+  </defs>
+
+  <!-- Deep Space Background -->
+  <rect width="100%" height="100%" fill="#020208" />
+
+  <!-- Ambient Nebulae -->
+  <circle cx="250" cy="300" r="450" fill="url(#nebula-cyan)" />
+  <circle cx="550" cy="450" r="500" fill="url(#nebula-magenta)" />
+
+  <!-- Starfield with Varied Intensity & Flares -->
+  <g id="starfield">
+    <circle cx="70" cy="120" r="1" fill="#ffffff" opacity="0.4" />
+    <circle cx="150" cy="320" r="1.5" fill="#ffffff" opacity="0.6" />
+    <circle cx="80" cy="620" r="1" fill="#00f3ff" opacity="0.5" />
+    <circle cx="280" cy="710" r="2" fill="#ffffff" opacity="0.8" />
+    <circle cx="310" cy="150" r="1" fill="#ffffff" opacity="0.3" />
+    <circle cx="650" cy="80" r="1.5" fill="#ff7b00" opacity="0.5" />
+    <circle cx="720" cy="280" r="1" fill="#ffffff" opacity="0.4" />
+    <circle cx="780" cy="600" r="2.5" fill="#ffffff" opacity="0.9" />
+    <circle cx="520" cy="730" r="1" fill="#00f3ff" opacity="0.4" />
+    <circle cx="610" cy="500" r="1.5" fill="#ffffff" opacity="0.5" />
+    <!-- Distant Star Flares -->
+    <g opacity="0.7">
+      <path d="M 280,705 L 280,715 M 275,710 L 285,710" stroke="#ffffff" stroke-width="0.5" />
+      <path d="M 780,595 L 780,605 M 775,600 L 785,600" stroke="#ffffff" stroke-width="0.5" />
+    </g>
+  </g>
+
+  <!-- ==================== SPACE STATION (CORIOLIS CLASS) ==================== -->
+  <!-- Centered at (400, 400) and rotated for dynamic angle -->
+  <g id="space-station" transform="translate(400, 400) rotate(15)">
+    
+    <!-- 1. Outer Habitation Ring Infrastructure -->
+    <!-- Solid Base Ring -->
+    <circle cx="0" cy="0" r="255" fill="none" stroke="#090d16" stroke-width="24" />
+    <!-- Segmented Metallic Plating -->
+    <circle cx="0" cy="0" r="255" fill="none" stroke="#1e293b" stroke-width="20" stroke-dasharray="120, 8" />
+    <circle cx="0" cy="0" r="255" fill="none" stroke="#334155" stroke-width="10" stroke-dasharray="40, 15" opacity="0.7" />
+    
+    <!-- Glowing City/Habitation Windows on Ring -->
+    <circle cx="0" cy="0" r="260" fill="none" stroke="#ffe066" stroke-width="2.5" stroke-dasharray="1, 14" opacity="0.9" />
+    <circle cx="0" cy="0" r="255" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="2, 24" opacity="0.8" />
+    <circle cx="0" cy="0" r="250" fill="none" stroke="#ff9f43" stroke-width="2" stroke-dasharray="1, 18" opacity="0.85" />
+
+    <!-- Structural Outer Rims -->
+    <circle cx="0" cy="0" r="266" fill="none" stroke="#00f3ff" stroke-width="1.5" opacity="0.5" filter="url(#glow-cyan)" />
+    <circle cx="0" cy="0" r="244" fill="none" stroke="#00f3ff" stroke-width="1.5" opacity="0.5" filter="url(#glow-cyan)" />
+
+    <!-- 2. Middle Gantry Ring -->
+    <circle cx="0" cy="0" r="180" fill="none" stroke="#0f172a" stroke-width="6" />
+    <circle cx="0" cy="0" r="180" fill="none" stroke="#00f3ff" stroke-width="1" opacity="0.6" stroke-dasharray="10, 15" />
+
+    <!-- 3. Structural Spokes (Trusses) -->
+    <use href="#spoke" transform="rotate(0)" />
+    <use href="#spoke" transform="rotate(90)" />
+    <use href="#spoke" transform="rotate(180)" />
+    <use href="#spoke" transform="rotate(270)" />
+
+    <!-- 4. Docking Piers (Replacing Solar Arrays) -->
+    <use href="#docking-pier" transform="rotate(45)" />
+    <use href="#docking-pier" transform="rotate(135)" />
+    <use href="#docking-pier" transform="rotate(225)" />
+    <use href="#docking-pier" transform="rotate(315)" />
+
+    <!-- 5. Coriolis Core (3D Cuboctahedron Hull) -->
+    <!-- Facet West -->
+    <polygon points="-130,80 -130,-80 -50,-50 -50,50" fill="url(#metal-plate-1)" stroke="#00f3ff" stroke-width="1.5" opacity="0.9" />
+    <!-- Facet East -->
+    <polygon points="130,-80 130,80 50,50 50,-50" fill="url(#metal-plate-2)" stroke="#00f3ff" stroke-width="1.5" opacity="0.9" />
+    <!-- Facet North -->
+    <polygon points="-80,-130 80,-130 50,-50 -50,-50" fill="url(#metal-plate-1)" stroke="#00f3ff" stroke-width="1.5" opacity="0.9" />
+    <!-- Facet South -->
+    <polygon points="80,130 -80,130 -50,50 50,50" fill="url(#metal-plate-2)" stroke="#00f3ff" stroke-width="1.5" opacity="0.9" />
+
+    <!-- Corner Triangles -->
+    <polygon points="-130,-80 -80,-130 -50,-50" fill="url(#metal-plate-1)" stroke="#00f3ff" stroke-width="1.2" opacity="0.9" />
+    <polygon points="80,-130 130,-80 50,-50" fill="url(#metal-plate-1)" stroke="#00f3ff" stroke-width="1.2" opacity="0.9" />
+    <polygon points="130,80 80,130 50,50" fill="url(#metal-plate-2)" stroke="#00f3ff" stroke-width="1.2" opacity="0.9" />
+    <polygon points="-80,130 -130,80 -50,50" fill="url(#metal-plate-2)" stroke="#00f3ff" stroke-width="1.2" opacity="0.9" />
+
+    <!-- Core Panel Details & Window Rows -->
+    <g opacity="0.85">
+      <!-- North Facet Windows -->
+      <path d="M -65,-100 L 65,-100 M -55,-80 L 55,-80" stroke="#ffe066" stroke-width="1.5" stroke-dasharray="2, 8" />
+      <!-- South Facet Windows -->
+      <path d="M -65,100 L 65,100 M -55,80 L 55,80" stroke="#ffe066" stroke-width="1.5" stroke-dasharray="2, 8" />
+      <!-- East Facet Windows -->
+      <path d="M 100,-65 L 100,65 M 80,-55 L 80,55" stroke="#ffe066" stroke-width="1.5" stroke-dasharray="2, 8" />
+      <!-- West Facet Windows -->
+      <path d="M -100,-65 L -100,65 M -80,-55 L -80,55" stroke="#ffe066" stroke-width="1.5" stroke-dasharray="2, 8" />
+    </g>
+
+    <!-- Outer Hull Decals / Warning Stripes -->
+    <g stroke="#ff7b00" stroke-width="1.5" opacity="0.7" fill="none">
+      <path d="M -70,-115 L -55,-115 M 55,-115 L 70,-115" />
+      <path d="M -70,115 L -55,115 M 55,115 L 70,115" />
+    </g>
+
+    <!-- 6. Central Docking Face & Bay -->
+    <rect x="-50" y="-50" width="100" height="100" fill="#05070f" stroke="#00f3ff" stroke-width="2" />
+    <rect x="-40" y="-40" width="80" height="80" fill="none" stroke="#00f3ff" stroke-width="1" opacity="0.5" />
+    
+    <!-- Volumetric Docking Glow -->
+    <circle cx="0" cy="0" r="80" fill="url(#slot-glow)" opacity="0.5" pointer-events="none" />
+
+    <!-- The Docking Slot (The Mailbox) -->
+    <rect x="-25" y="-7" width="50" height="14" rx="1" fill="#001a24" stroke="#00f3ff" stroke-width="2" />
+    <rect x="-20" y="-3" width="40" height="6" rx="0.5" fill="#00f3ff" filter="url(#glow-cyan)" />
+
+    <!-- 3D Entry Guide Cage (The Toast Rack) -->
+    <!-- Outer Frame -->
+    <rect x="-45" y="-18" width="90" height="36" rx="2" fill="none" stroke="#00f3ff" stroke-width="1.5" opacity="0.8" filter="url(#glow-cyan)" />
+    <!-- Middle Frame -->
+    <rect x="-35" y="-12" width="70" height="24" rx="1.5" fill="none" stroke="#00f3ff" stroke-width="1" opacity="0.6" />
+    <!-- Perspective Connectors -->
+    <line x1="-25" y1="-7" x2="-45" y2="-18" stroke="#00f3ff" stroke-width="1.2" opacity="0.7" />
+    <line x1="25" y1="-7" x2="45" y2="-18" stroke="#00f3ff" stroke-width="1.2" opacity="0.7" />
+    <line x1="25" y1="7" x2="45" y2="18" stroke="#00f3ff" stroke-width="1.2" opacity="0.7" />
+    <line x1="-25" y1="7" x2="-45" y2="18" stroke="#00f3ff" stroke-width="1.2" opacity="0.7" />
+    <!-- Cage Bars -->
+    <line x1="-15" y1="-18" x2="-15" y2="18" stroke="#00f3ff" stroke-width="0.8" opacity="0.5" />
+    <line x1="15" y1="-18" x2="15" y2="18" stroke="#00f3ff" stroke-width="0.8" opacity="0.5" />
+    <line x1="0" y1="-18" x2="0" y2="18" stroke="#00f3ff" stroke-width="0.8" opacity="0.5" />
+
+    <!-- Red/Green Orientation Lights -->
+    <!-- Port Side (Red - Left) -->
+    <circle cx="-45" cy="-18" r="2.5" fill="#ff3b30" filter="url(#glow-red)" />
+    <circle cx="-45" cy="0" r="2" fill="#ff3b30" filter="url(#glow-red)" />
+    <circle cx="-45" cy="18" r="2.5" fill="#ff3b30" filter="url(#glow-red)" />
+    <!-- Starboard Side (Green - Right) -->
+    <circle cx="45" cy="-18" r="2.5" fill="#4cd964" filter="url(#glow-cyan)" />
+    <circle cx="45" cy="0" r="2" fill="#4cd964" filter="url(#glow-cyan)" />
+    <circle cx="45" cy="18" r="2.5" fill="#4cd964" filter="url(#glow-cyan)" />
+
+    <!-- 7. External Spire & Antenna Arrays -->
+    <!-- Bottom-Left Spire -->
+    <g transform="translate(-90, 90) rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="80" stroke="#475569" stroke-width="2" />
+      <line x1="-5" y1="40" x2="5" y2="40" stroke="#475569" stroke-width="1" />
+      <line x1="-10" y1="60" x2="10" y2="60" stroke="#475569" stroke-width="1" />
+      <circle cx="0" cy="80" r="2" fill="#ff3b30" filter="url(#glow-red)" />
+    </g>
+    <!-- Top-Right Spire -->
+    <g transform="translate(90, -90) rotate(225)">
+      <line x1="0" y1="0" x2="0" y2="60" stroke="#475569" stroke-width="2" />
+      <circle cx="0" cy="60" r="2" fill="#ffffff" filter="url(#glow-soft-white)" />
+    </g>
+
+    <!-- 8. Navigation Beacons on Core Corners -->
+    <circle cx="-130" cy="-80" r="2" fill="#ff3b30" filter="url(#glow-red)" />
+    <circle cx="-130" cy="80" r="2" fill="#ff3b30" filter="url(#glow-red)" />
+    <circle cx="130" cy="-80" r="2" fill="#4cd964" filter="url(#glow-cyan)" />
+    <circle cx="130" cy="80" r="2" fill="#4cd964" filter="url(#glow-cyan)" />
+
+    <!-- 9. Tiny Docking/Departing Spaceships -->
+    <!-- Approaching Ship (Cyan Trail) -->
+    <g transform="translate(110, 60)">
+      <polygon points="0,0 -8,4 -6,-3" fill="#38bdf8" />
+      <polygon points="0,0 15,5 10,10" fill="url(#engine-trail-cyan)" />
+    </g>
+    <!-- Departing Ship (Orange Trail) -->
+    <g transform="translate(-130, -110)">
+      <polygon points="0,0 6,-6 8,2" fill="#fb923c" />
+      <polygon points="0,0 -18,-10 -10,-18" fill="url(#engine-trail-orange)" />
+    </g>
+  </g>
+</svg>

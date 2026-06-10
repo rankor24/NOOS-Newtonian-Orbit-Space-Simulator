@@ -107,13 +107,17 @@ export interface ShipState {
   vx: number;
   vy: number;
   heading: number;
+  pitchDegPerSec?: number;
+  yawDegPerSec?: number;
   throttlePercent: number;
   powerDistribution: {
     shields: number;
     engines: number;
     weapons: number;
   };
+  /** Legacy Elite-derived flavor data. Not used by Newtonian flight physics. */
   maxCruiseSpeed: number;
+  /** Legacy Elite-derived flavor data. Not used by Newtonian flight physics. */
   maxBoostSpeed: number;
   baseShieldStrength: number;
   baseArmour: number;

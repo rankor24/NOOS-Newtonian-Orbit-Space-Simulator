@@ -6,7 +6,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
 import { CelestialBody, ShipState, SystemFeature } from "../types";
-import { getAbsoluteBodyPosition, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, getCachedPosition, BodyPosCache } from "../utils/physics";
+import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, getCachedPosition, BodyPosCache } from "../utils/physics";
 import { observeFrame } from "../utils/observability";
 
 interface CanvasProps {
@@ -24,7 +24,7 @@ interface CanvasProps {
   cameraModeOverride?: "ship" | "target" | "star" | "fit";
   hideCameraControls?: boolean;
 }
-type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target";
+type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target";
 
 type CameraMode = "ship" | "target" | "star" | "fit";
 type Point = { x: number; y: number };
@@ -35,8 +35,12 @@ type RoutePrognosis = {
   referenceBodyId: string | null;
   referenceClosestIndex: number;
   referenceClosestAltitude: number;
+  referenceFarthestIndex: number;
+  referenceFarthestAltitude: number | null;
   selectedClosestIndex: number | null;
   selectedClosestDistance: number | null;
+  soiEntryIndex: number | null;
+  soiEntryBodyId: string | null;
   impactIndex: number | null;
 };
 
@@ -47,6 +51,13 @@ const DEFAULT_ZOOM_EXPONENT = -9;
 const SUN_RADIUS_METERS = 6.96e8;
 
 const GRID_STEPS_AU = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 250, 500, 1000, 2500];
+
+function getParentMassForSoi(body: CelestialBody, bodies: CelestialBody[]): number {
+  if (!body.parentId) return 1.989e30;
+  const parent = bodies.find((entry) => entry.id === body.parentId);
+  if (!parent) return 1.989e30;
+  return parent.type === "star" ? 1.989e30 : parent.mass ?? 1.989e30;
+}
 
 const THEME = {
   amber: {
@@ -208,6 +219,91 @@ function drawVectorLine(
   ctx.restore();
 }
 
+function drawStationMapGlyph(
+  ctx: CanvasRenderingContext2D,
+  origin: Point,
+  radius: number,
+  selected: boolean,
+  hovered: boolean,
+  accentColor: string
+) {
+  const size = clamp(radius * (selected ? 4.8 : hovered ? 4.4 : 3.8), 18, 52);
+  const cyan = "#00f3ff";
+  const cyanSoft = "rgba(0,243,255,0.42)";
+  const cyanDim = "rgba(0,174,255,0.22)";
+  const orange = "#ff7b00";
+  const stroke = selected ? accentColor : hovered ? "#e2e8f0" : cyan;
+
+  const glow = ctx.createRadialGradient(origin.x, origin.y, 0, origin.x, origin.y, size * 1.05);
+  glow.addColorStop(0, "rgba(0,243,255,0.34)");
+  glow.addColorStop(0.45, "rgba(0,174,255,0.13)");
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(origin.x, origin.y, size * 1.05, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(origin.x, origin.y);
+  ctx.rotate(Math.PI / 8);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // Distilled from docs/svg/Station.svg: ring station + hub + docking spokes,
+  // simplified for canvas map readability instead of importing the full scene.
+  ctx.strokeStyle = cyanDim;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.58, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = selected ? accentColor : cyanSoft;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.72, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = selected ? 2 : 1.35;
+  ctx.strokeRect(-size * 0.22, -size * 0.22, size * 0.44, size * 0.44);
+  ctx.strokeRect(-size * 0.12, -size * 0.08, size * 0.24, size * 0.16);
+
+  for (let i = 0; i < 4; i += 1) {
+    ctx.save();
+    ctx.rotate((Math.PI / 2) * i);
+    ctx.strokeStyle = cyanSoft;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.22);
+    ctx.lineTo(0, -size * 0.84);
+    ctx.stroke();
+
+    ctx.strokeStyle = selected ? accentColor : cyan;
+    ctx.lineWidth = selected ? 1.8 : 1.25;
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.1, -size * 0.52);
+    ctx.lineTo(size * 0.1, -size * 0.6);
+    ctx.lineTo(-size * 0.1, -size * 0.68);
+    ctx.stroke();
+
+    ctx.fillStyle = orange;
+    ctx.fillRect(-size * 0.025, -size * 0.77, size * 0.05, size * 0.1);
+    ctx.restore();
+  }
+
+  ctx.strokeStyle = "rgba(255,123,0,0.72)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-size * 0.28, -size * 0.36);
+  ctx.lineTo(-size * 0.18, -size * 0.3);
+  ctx.moveTo(size * 0.28, size * 0.36);
+  ctx.lineTo(size * 0.18, size * 0.3);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 /** LOD body sizing: always proportional to real radius × zoom.
  *  Floor based on log(radius) so bigger bodies get slightly bigger
  *  minimum dots — hierarchy visible at any zoom. Real proportions
@@ -215,6 +311,7 @@ function drawVectorLine(
 function getBodyDisplayRadius(body: CelestialBody, scale: number): number {
   const realR = Math.max(0, body.radius ?? 0);
   const realPx = realR * scale;
+  if (body.type === "station") return clamp(Math.max(realPx, 4.2), 4.2, 12);
 
   // Log-scale floor: 100 m → 0.8 px, 100,000 km → 2.8 px
   const logR = Math.log10(Math.max(realR, 100));
@@ -226,6 +323,7 @@ function getBodyDisplayRadius(body: CelestialBody, scale: number): number {
 
 function shouldAlwaysRevealBody(body: CelestialBody) {
   if (!body.parentId) return true;
+  if (body.type === "station") return true;
   if (body.parentId === "star_sol" && body.type !== "asteroid" && body.type !== "comet") return true;
   if (body.type === "moon" && !isDesignationMoonName(body.name)) return true;
   return PRIORITY_SMALL_BODIES.has(body.name) || !!body.stationName;
@@ -265,8 +363,12 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     referenceBodyId: null,
     referenceClosestIndex: 0,
     referenceClosestAltitude: Infinity,
+    referenceFarthestIndex: 0,
+    referenceFarthestAltitude: null,
     selectedClosestIndex: null,
     selectedClosestDistance: null,
+    soiEntryIndex: null,
+    soiEntryBodyId: null,
     impactIndex: null,
   });
 
@@ -532,9 +634,10 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     const asteroidTooSmall = body.type === "asteroid" && orbitRadiusPx < 5 && !selected;
     if (moonTooSmall || designationOrbitTooSmall || asteroidTooSmall) return;
 
-    ctx.strokeStyle = selected ? palette.accent : "rgba(148,163,184,0.20)";
+    const isStation = body.type === "station";
+    ctx.strokeStyle = selected ? palette.accent : isStation ? "rgba(167,139,250,0.32)" : "rgba(148,163,184,0.20)";
     ctx.lineWidth = selected ? 1.5 : 1;
-    ctx.setLineDash(selected ? [] : [4, 8]);
+    ctx.setLineDash(selected ? [] : isStation ? [2, 6] : [4, 8]);
     ctx.beginPath();
 
     const steps = 96;
@@ -578,6 +681,20 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     }
 
     if ((body.type === "asteroid" || body.type === "comet") && !selected && !hovered && !prioritySmallBody && scale < 2e-10) {
+      return;
+    }
+
+    if (body.type === "station") {
+      drawStationMapGlyph(ctx, pt, radius, selected, hovered, palette.accent);
+
+      if (selected || hovered || scale > 8e-10) {
+        ctx.fillStyle = selected ? palette.accent : "#e9d5ff";
+        ctx.font = selected ? "bold 11px system-ui, sans-serif" : "11px system-ui, sans-serif";
+        ctx.fillText(body.name, pt.x + radius + 10, pt.y + 4);
+        ctx.fillStyle = "#a78bfa";
+        ctx.font = "9px ui-monospace, SFMono-Regular, Consolas, monospace";
+        ctx.fillText("ORBITAL STATION", pt.x + radius + 10, pt.y + 16);
+      }
       return;
     }
 
@@ -625,8 +742,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       }
     }
 
-    if (body.type === "planet" && selected) {
-      const soi = getSphereOfInfluence(body) * scale;
+    if ((body.type === "planet" || body.type === "moon") && selected) {
+      const soi = getSphereOfInfluence(body, getParentMassForSoi(body, bodies)) * scale;
       if (soi > 16 && soi < Math.max(width, height) * 4) {
         ctx.strokeStyle = "rgba(34,197,94,0.22)";
         ctx.setLineDash([8, 8]);
@@ -729,18 +846,37 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     }));
     let referenceClosestIndex = 0;
     let referenceClosestAltitude = Infinity;
+    let referenceFarthestIndex = 0;
+    let referenceFarthestAltitude: number | null = null;
     let selectedClosestIndex: number | null = null;
     let selectedClosestDistance: number | null = null;
+    let soiEntryIndex: number | null = null;
+    let soiEntryBodyId: string | null = null;
     let impactIndex: number | null = null;
+    let previousDominantBodyId: string | null = null;
 
     timedPoints.forEach((point, index) => {
       const t = gameTime + point.t;
+      const cache = buildBodyPositionCache(bodies, t);
+      const dominant = getDominantGravitySource(point.x, point.y, bodies, t, 1.989e30, cache).body;
+      if (index === 0) {
+        previousDominantBodyId = dominant?.id ?? null;
+      } else if (soiEntryIndex === null && (dominant?.id ?? null) !== previousDominantBodyId) {
+        soiEntryIndex = index;
+        soiEntryBodyId = dominant?.id ?? null;
+      }
+      previousDominantBodyId = dominant?.id ?? null;
+
       if (referenceBody) {
-        const bodyPos = getAbsoluteBodyPosition(referenceBody.id, bodies, t);
+        const bodyPos = getCachedPosition(cache, referenceBody.id);
         const altitude = Math.hypot(point.x - bodyPos.x, point.y - bodyPos.y) - (referenceBody.radius ?? 0);
         if (altitude < referenceClosestAltitude) {
           referenceClosestAltitude = altitude;
           referenceClosestIndex = index;
+        }
+        if (referenceFarthestAltitude === null || altitude > referenceFarthestAltitude) {
+          referenceFarthestAltitude = altitude;
+          referenceFarthestIndex = index;
         }
         if (impactIndex === null && altitude <= 0) {
           impactIndex = index;
@@ -748,7 +884,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       }
 
       if (selectedBody) {
-        const targetPos = getAbsoluteBodyPosition(selectedBody.id, bodies, t);
+        const targetPos = getCachedPosition(cache, selectedBody.id);
         const targetDistance = Math.hypot(point.x - targetPos.x, point.y - targetPos.y);
         if (selectedClosestDistance === null || targetDistance < selectedClosestDistance) {
           selectedClosestDistance = targetDistance;
@@ -763,8 +899,12 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       referenceBodyId: referenceBody?.id ?? null,
       referenceClosestIndex,
       referenceClosestAltitude,
+      referenceFarthestIndex,
+      referenceFarthestAltitude,
       selectedClosestIndex,
       selectedClosestDistance,
+      soiEntryIndex,
+      soiEntryBodyId,
       impactIndex,
     };
   };
@@ -852,11 +992,27 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       drawRouteMarker(ctx, periPoint, center, width, height, label, prognosis.referenceClosestAltitude <= 0 ? "#ef4444" : "#facc15");
     }
 
+    if (referenceBody && prognosis.referenceFarthestAltitude !== null && prognosis.referenceFarthestIndex !== prognosis.referenceClosestIndex) {
+      const apoPoint = route[prognosis.referenceFarthestIndex];
+      if (apoPoint) {
+        const label = `Ap ${formatDistanceMeters(prognosis.referenceFarthestAltitude)} T-${formatDuration(apoPoint.t)}`;
+        drawRouteMarker(ctx, apoPoint, center, width, height, label, "#a78bfa");
+      }
+    }
+
     if (selectedBody && prognosis.selectedClosestIndex !== null && prognosis.selectedClosestDistance !== null) {
       const closestPoint = route[prognosis.selectedClosestIndex];
       if (closestPoint) {
         const label = `CA ${formatDistanceMeters(prognosis.selectedClosestDistance)} T-${formatDuration(closestPoint.t)}`;
         drawRouteMarker(ctx, closestPoint, center, width, height, label, "#38bdf8");
+      }
+    }
+
+    if (prognosis.soiEntryIndex !== null) {
+      const soiPoint = route[prognosis.soiEntryIndex];
+      const soiBody = prognosis.soiEntryBodyId ? bodies.find((body) => body.id === prognosis.soiEntryBodyId) : null;
+      if (soiPoint && soiBody) {
+        drawRouteMarker(ctx, soiPoint, center, width, height, `SOI ${soiBody.name} T-${formatDuration(soiPoint.t)}`, "#22c55e");
       }
     }
 

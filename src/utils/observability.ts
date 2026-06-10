@@ -63,9 +63,9 @@ function sanitizeAttrs(attrs: Record<string, unknown> = {}): Record<string, Attr
       clean[key] = value.length > MAX_ATTR_STRING ? `${value.slice(0, MAX_ATTR_STRING)}...` : value;
     } else if (typeof value === "number") {
       clean[key] = Number.isFinite(value) ? value : null;
-    } else if (typeof value === "boolean" || value === null) {
+    } else if (typeof value === "boolean") {
       clean[key] = value;
-    } else if (value === undefined) {
+    } else if (value === null || value === undefined) {
       clean[key] = null;
     } else {
       clean[key] = String(value).slice(0, MAX_ATTR_STRING);

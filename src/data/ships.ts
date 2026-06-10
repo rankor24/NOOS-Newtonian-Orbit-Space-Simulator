@@ -15,6 +15,7 @@ export const SIDEWINDER_STARTER_PROFILE = {
   sourceShip: "Elite Dangerous Sidewinder",
   retailCost: 32000,
   hullMassKg: 25000,
+  // Legacy ED speed flavor only. NOSS local flight uses Newtonian thrust + time warp, not speed caps.
   baseCruiseSpeed: 6000000,
   baseBoostSpeed: 10000000,
   minThrustPercent: 45.454,

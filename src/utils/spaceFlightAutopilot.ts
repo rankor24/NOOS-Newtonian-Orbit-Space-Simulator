@@ -15,8 +15,6 @@ export interface ApproachGuidanceInput {
   arrivalSpeed?: number;
   safetyDistance?: number;
   maxCruiseClosingSpeed?: number;
-  maxSupercruiseClosingSpeed?: number;
-  supercruiseThrottlePercent?: number;
   stationApproach?: boolean;
   currentHeading?: number;
   stationAlignmentTolerance?: number;
@@ -33,6 +31,7 @@ export interface ApproachGuidance {
   closingSpeed: number;
   desiredClosingSpeed: number;
   brakingDistance: number;
+  etaSeconds: number | null;
 }
 
 const G = 6.6743e-11;
@@ -53,24 +52,6 @@ function safeClosingSpeed(rangeMeters: number, maxAcceleration: number, terminal
   return Math.min(speedCap, raw);
 }
 
-function supercruiseClosingSpeed(
-  rangeMeters: number,
-  distanceFromTarget: number,
-  bodyRadius: number,
-  normalCruiseCap: number,
-  supercruiseCap: number,
-  throttlePercent: number
-): number {
-  const rangeMm = Math.max(0, rangeMeters) / 1_000_000;
-  const eliteStyleCurve = Math.sqrt(rangeMm) * 1_000_000;
-  const altitude = Math.max(0, distanceFromTarget - bodyRadius);
-  const gravityWellSpan = Math.max(30_000_000, bodyRadius * 18);
-  const gravityDepth = clamp(1 - altitude / gravityWellSpan, 0, 1);
-  const throttleBypass = clamp(throttlePercent / 100, 0, 1) * 0.55;
-  const slowdown = 1 - gravityDepth * (0.88 - throttleBypass);
-  return clamp(eliteStyleCurve * slowdown, normalCruiseCap, supercruiseCap);
-}
-
 export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachGuidance {
   const distance = magnitude(input.dx, input.dy);
   const relSpeed = magnitude(input.relVx, input.relVy);
@@ -80,7 +61,6 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
   const arrivalSpeed = input.arrivalSpeed ?? 20;
   const safetyDistance = Math.max(input.safetyDistance ?? 450_000, arrivalDistance * 0.08);
   const maxCruiseClosingSpeed = input.maxCruiseClosingSpeed ?? 4_000;
-  const maxSupercruiseClosingSpeed = input.maxSupercruiseClosingSpeed ?? Math.max(maxCruiseClosingSpeed, 6_000_000);
   const outwardX = distance > EPS ? input.dx / distance : 1;
   const outwardY = distance > EPS ? input.dy / distance : 0;
   const inwardX = -outwardX;
@@ -90,8 +70,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
   const radialOutSpeed = input.relVx * outwardX + input.relVy * outwardY;
   const closingSpeed = -radialOutSpeed;
   const rangeToArrivalEstimate = Math.max(0, distance - arrivalDistance);
-  const etaSeconds = closingSpeed > 1 ? rangeToArrivalEstimate / closingSpeed : Infinity;
-  const supercruiseThrottlePercent = input.supercruiseThrottlePercent ?? (etaSeconds > 7 ? 100 : 75);
+  const etaSeconds = closingSpeed > 1 ? rangeToArrivalEstimate / closingSpeed : null;
   const targetMass = Math.max(0, input.targetMass ?? 0);
   const mu = G * targetMass;
   const tangentialSpeed = input.relVx * tangentX + input.relVy * tangentY;
@@ -112,16 +91,8 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
 
   const rangeToArrival = rangeToArrivalEstimate;
   const rangeToOrbit = Math.max(0, distance - targetOrbitDistance);
-  const cruiseSpeedCap = supercruiseClosingSpeed(
-    rangeToOrbit,
-    distance,
-    bodyRadius,
-    maxCruiseClosingSpeed,
-    maxSupercruiseClosingSpeed,
-    supercruiseThrottlePercent
-  );
   const desiredArrivalClosing = safeClosingSpeed(rangeToArrival, maxAcceleration, arrivalSpeed, maxCruiseClosingSpeed);
-  const desiredOrbitClosing = safeClosingSpeed(rangeToOrbit, maxAcceleration, Math.max(90, arrivalSpeed * 3), cruiseSpeedCap);
+  const desiredOrbitClosing = safeClosingSpeed(rangeToOrbit, maxAcceleration, Math.max(90, arrivalSpeed * 3), maxCruiseClosingSpeed);
   const inRendezvousZone = distance <= targetOrbitDistance * 1.15;
   const desiredClosingSpeed = inRendezvousZone
     ? Math.min(desiredArrivalClosing, 220)
@@ -140,6 +111,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
         closingSpeed,
         desiredClosingSpeed,
         brakingDistance,
+        etaSeconds,
       };
     }
 
@@ -151,6 +123,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
       closingSpeed,
       desiredClosingSpeed,
       brakingDistance,
+      etaSeconds,
     };
   }
 
@@ -165,6 +138,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
         closingSpeed,
         desiredClosingSpeed: arrivalSpeed,
         brakingDistance,
+        etaSeconds,
       };
     }
 
@@ -177,6 +151,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
         closingSpeed,
         desiredClosingSpeed: arrivalSpeed,
         brakingDistance,
+        etaSeconds,
       };
     }
   }
@@ -198,6 +173,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
       closingSpeed,
       desiredClosingSpeed,
       brakingDistance,
+      etaSeconds,
     };
   }
 
@@ -216,6 +192,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
       closingSpeed,
       desiredClosingSpeed,
       brakingDistance,
+      etaSeconds,
     };
   }
 
@@ -237,6 +214,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
       closingSpeed,
       desiredClosingSpeed,
       brakingDistance,
+      etaSeconds,
     };
   }
 
@@ -248,5 +226,6 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
     closingSpeed,
     desiredClosingSpeed,
     brakingDistance,
+    etaSeconds,
   };
 }

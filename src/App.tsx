@@ -11,12 +11,14 @@ import { MainMenu } from "./components/MainMenu";
 import { createInitialState, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION } from "./data/ships";
 import { GameState, CelestialBody, SpaceContract } from "./types";
-import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs } from "./utils/physics";
+import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, propagateKeplerianCoast } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
 import { computeApproachGuidance } from "./utils/spaceFlightAutopilot";
-import { pickPortForBody } from "./utils/worldText";
+import type { ApproachGuidance } from "./utils/spaceFlightAutopilot";
+import { computeTransferGuidance } from "./utils/transferPlanner";
+import { getPortsForBody, pickPortForBody } from "./utils/worldText";
 import { createCustomInitialState, migrateLoadedState } from "./app/systems/bootstrap";
 import { THEMES } from "./app/systems/themeSystem";
 import { useCockpitControls } from "./app/systems/useCockpitControls";
@@ -44,13 +46,52 @@ History
 
 const DOCKING_RANGE_METERS = 1.2e6;
 const DOCKING_MAX_REL_SPEED = 600;
-const AUTOPILOT_MAX_TURN_RATE = 0.9; // rad/sec, real-time fly-by-wire rotation cap
+const DOCKING_HOLD_SECONDS = 10;
+const DOCKING_ALIGNMENT_TOLERANCE = 0.22;
+const MAX_HEADING_STEP_PER_FRAME = 0.35; // cap game-time rotation so high warp cannot snap headings instantly
 const METERS_PER_LIGHT_YEAR = 9.4607e15;
 const SYSTEM_ESCAPE_RADIUS_METERS = 50 * AU;
 const STAR_ARRIVAL_RADIUS_LY = 0.02;
+const SUN_RADIUS_METERS = 6.957e8;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const angleDelta = (target: number, current: number) => Math.atan2(Math.sin(target - current), Math.cos(target - current));
+const segmentDistance = (
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  px: number,
+  py: number
+) => {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const ab2 = abx * abx + aby * aby;
+  if (ab2 <= 1e-9) return Math.hypot(px - ax, py - ay);
+  const t = clamp(((px - ax) * abx + (py - ay) * aby) / ab2, 0, 1);
+  return Math.hypot(px - (ax + abx * t), py - (ay + aby * t));
+};
+
+const getDockingAlignmentError = (
+  ship: GameState["ship"],
+  body: CelestialBody,
+  bodyPos: { x: number; y: number },
+  bodyVelocity: { vx: number; vy: number }
+) => {
+  const offsetX = ship.x - bodyPos.x;
+  const offsetY = ship.y - bodyPos.y;
+  const distance = Math.max(1, Math.hypot(offsetX, offsetY));
+  const ux = offsetX / distance;
+  const uy = offsetY / distance;
+  const tangentX = -uy;
+  const tangentY = ux;
+  const relVx = ship.vx - bodyVelocity.vx;
+  const relVy = ship.vy - bodyVelocity.vy;
+  const tangentialSpeed = relVx * tangentX + relVy * tangentY;
+  const orbitSign = Math.abs(tangentialSpeed) > 1 ? Math.sign(tangentialSpeed) : 1;
+  const airlockHeading = Math.atan2(tangentY * orbitSign, tangentX * orbitSign);
+  return Math.abs(angleDelta(airlockHeading, ship.heading));
+};
 
 export default function App() {
 const [gameState, setGameState] = useState<GameState>(() => {
@@ -73,6 +114,8 @@ const [isInMainMenu, setIsInMainMenu] = useState<boolean>(true);
 const [activeTab, setActiveTab] = useState<"market" | "upgrades" | "contracts">("market");
 const [mapMode, setMapMode] = useState<"star" | "ship" | "target">("star");
 const [isThrusting, setIsThrusting] = useState<boolean>(false);
+const [approachGuidanceReadout, setApproachGuidanceReadout] = useState<ApproachGuidance | null>(null);
+const [dockingClearance, setDockingClearance] = useState<{ bodyId: string; portId: string; holdStartedAt: number | null } | null>(null);
 const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 
 // Customizable Cockpit UI Theme State
@@ -81,7 +124,7 @@ return (localStorage.getItem("newtonian_theme") as any) || "amber";
 });
 
 // Custom Autopilot Toggles
-const [autopilotMode, setAutopilotMode] = useState<"none" | "match-speed" | "circularize" | "align-target" | "approach-target">("none");
+const [autopilotMode, setAutopilotMode] = useState<"none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target">("none");
 
 const syncOwnedShips = (state: GameState): GameState => ({
 ...state,
@@ -93,6 +136,9 @@ const stateRef = useRef(gameState);
 stateRef.current = gameState;
 const autopilotRef = useRef(autopilotMode);
 autopilotRef.current = autopilotMode;
+const dockingClearanceRef = useRef(dockingClearance);
+dockingClearanceRef.current = dockingClearance;
+const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: false, circMode: false, matchMode: false });
 
 useEffect(() => {
   const interval = setInterval(() => {
@@ -141,8 +187,9 @@ const targetBearing = selectedBodyPosition
 ? Math.atan2(selectedBodyPosition.y - gameState.ship.y, selectedBodyPosition.x - gameState.ship.x)
 : null;
 const dockingSpecs = getDockingSpecs(selectedBody);
+const selectedBodyPorts = getPortsForBody(selectedBody);
 const canDockAtSelectedBody = !!selectedBody &&
-selectedBody.hasMarket &&
+selectedBodyPorts.length > 0 &&
 dockingDistance < dockingSpecs.maxDistance &&
 dockingRelativeSpeed < dockingSpecs.maxSpeed;
 
@@ -182,7 +229,7 @@ return;
 }
 
 const current = stateRef.current;
-const gameDt = realDt * current.timeScale; // Game seconds elapsed
+let gameDt = realDt * current.timeScale; // Game seconds elapsed; burn phases may clamp this below.
 
     // Build position cache once per tick — all physics calls reuse this
     const posCache = buildBodyPositionCache(systemBodiesRef.current, current.gameTime);
@@ -271,7 +318,8 @@ interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy:
 
     // --- 1. Autopilot Core Control Loop ---
     let targetHeading = current.ship.heading;
-    let throttleCommand = (autopilotRef.current === "none" || autopilotRef.current === "align-target")
+    const attitudeHoldModes = new Set(["align-target", "hold-prograde", "hold-retrograde", "hold-radial-out", "hold-radial-in", "hold-anti-target"]);
+    let throttleCommand = (autopilotRef.current === "none" || attitudeHoldModes.has(autopilotRef.current))
       ? current.ship.throttlePercent
       : 0;
 
@@ -358,6 +406,62 @@ throttleCommand = 0;
 setAutopilotMode("none");
 addConsoleLog("Autopilot: Target alignment disengaged (no active target).", "warning");
 }
+} else if (autopilotRef.current === "hold-anti-target") {
+if (targetBearing !== null) {
+targetHeading = targetBearing + Math.PI;
+} else {
+throttleCommand = 0;
+setAutopilotMode("none");
+addConsoleLog("Autopilot: Anti-target hold disengaged (no active target).", "warning");
+}
+} else if (autopilotRef.current === "hold-prograde") {
+const speed = Math.hypot(current.ship.vx, current.ship.vy);
+if (speed > 0.1) targetHeading = Math.atan2(current.ship.vy, current.ship.vx);
+} else if (autopilotRef.current === "hold-retrograde") {
+const speed = Math.hypot(current.ship.vx, current.ship.vy);
+if (speed > 0.1) targetHeading = Math.atan2(current.ship.vy, current.ship.vx) + Math.PI;
+} else if (autopilotRef.current === "hold-radial-out" || autopilotRef.current === "hold-radial-in") {
+const radialBody = tickDomGravity.body || systemBodiesRef.current[0];
+const radialPos = posCache.get(radialBody.id) || getAbsoluteBodyPosition(radialBody.id, systemBodiesRef.current, current.gameTime);
+const radialHeading = Math.atan2(current.ship.y - radialPos.y, current.ship.x - radialPos.x);
+targetHeading = autopilotRef.current === "hold-radial-out" ? radialHeading : radialHeading + Math.PI;
+} else if (autopilotRef.current === "goto-target") {
+if (current.selectedBodyId) {
+const bodyRadius = activeTargetBody.radius ?? 0;
+const shipMass = current.ship.dryMass + current.ship.fuelLevel;
+const maxAccel = current.ship.engineThrust / shipMass;
+const targetMass = activeTargetBody.type === "star"
+? (activeTargetBody.mass ?? 0) * 1.989e30
+: (activeTargetBody.mass ?? 0);
+const activeSpecs = getDockingSpecs(activeTargetBody);
+const terminalDistance = Math.max(activeSpecs.maxDistance * 8, bodyRadius + 20_000_000);
+const guidance = computeTransferGuidance({
+dx,
+dy,
+relVx,
+relVy,
+maxAcceleration: maxAccel,
+targetMass,
+bodyRadius,
+terminalDistance,
+terminalSpeed: Math.max(25, activeSpecs.maxSpeed * 0.5),
+});
+setApproachGuidanceReadout(guidance);
+
+if (guidance.phase === "arrived") {
+throttleCommand = 0;
+setAutopilotMode("approach-target");
+addConsoleLog(`Autopilot: Transfer leg captured near ${activeTargetBody.name}. Terminal approach engaged.`, "success");
+} else {
+targetHeading = guidance.targetHeading;
+const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
+throttleCommand = angleError < 0.25 ? guidance.throttlePercent : 0;
+}
+} else {
+throttleCommand = 0;
+setAutopilotMode("none");
+addConsoleLog("Autopilot: Go-to-body aborted (no active target selected).", "warning");
+}
 } else if (autopilotRef.current === "approach-target") {
 // APPR: Newtonian automatic approach and docking deceleration assist!
 if (current.selectedBodyId) {
@@ -380,12 +484,12 @@ arrivalDistance: activeSpecs.maxDistance * 0.9,
 arrivalSpeed: Math.min(25, activeSpecs.maxSpeed * 0.1),
 safetyDistance: 400000,
 maxCruiseClosingSpeed: 4500,
-maxSupercruiseClosingSpeed: Math.max(current.ship.maxCruiseSpeed, 6_000_000),
 stationApproach: activeTargetBody.hasMarket,
 currentHeading: current.ship.heading,
 targetMass,
 bodyRadius,
 });
+setApproachGuidanceReadout(guidance);
 
 if (guidance.phase === "arrived") {
 throttleCommand = 0;
@@ -403,19 +507,28 @@ setAutopilotMode("none");
 addConsoleLog("Autopilot: Approach aborted (no active target selected).", "warning");
 }
 }
+} else {
+setApproachGuidanceReadout(null);
 }
 
-// Keep ship rotating towards target headings
+// Keep ship rotating towards target headings with the same hull rate used for manual steering.
 let finalHeading = current.ship.heading;
+const steeringEnginePips = current.ship.powerDistribution?.engines ?? DEFAULT_POWER_DISTRIBUTION.engines;
+const hullTurnRate = ((current.ship.yawDegPerSec ?? current.ship.pitchDegPerSec ?? 16) * Math.PI) / 180;
+if (Math.abs(throttleCommand) > 0.001 && current.timeScale > 60) {
+gameDt = realDt * 60;
+}
+const headingStep = Math.min(MAX_HEADING_STEP_PER_FRAME, hullTurnRate * (0.7 + steeringEnginePips / 100) * gameDt);
 if (autopilotRef.current !== "none") {
-const enginePips = current.ship.powerDistribution?.engines ?? DEFAULT_POWER_DISTRIBUTION.engines;
-const turnSpeed = AUTOPILOT_MAX_TURN_RATE * (0.7 + enginePips / 100) * realDt;
 const diff = angleDelta(targetHeading, current.ship.heading);
-if (Math.abs(diff) < turnSpeed) {
+if (Math.abs(diff) < headingStep) {
 finalHeading = targetHeading;
 } else {
-finalHeading += Math.sign(diff) * turnSpeed;
+finalHeading += Math.sign(diff) * headingStep;
 }
+} else if (pressedKeysRef.current.steerLeft || pressedKeysRef.current.steerRight) {
+const manualDirection = (pressedKeysRef.current.steerRight ? 1 : 0) - (pressedKeysRef.current.steerLeft ? 1 : 0);
+finalHeading += manualDirection * headingStep;
 }
 
 // --- 2. Integrate Spacecraft Positions ---
@@ -442,7 +555,19 @@ updatedShip.throttlePercent = throttleCommand;
 updatedShip.battery = netBattery;
 
     // Physics motion solver step
-    updatedShip = integrateSpacecraft(
+    const isCoastingOnRails = Math.abs(actualThrottlePercent) <= 0.001 && (autopilotRef.current === "none" || autopilotRef.current === "goto-target" || attitudeHoldModes.has(autopilotRef.current));
+    const railCoastReferenceBody = tickDomGravity.body || systemBodiesRef.current[0];
+    const railCoastShip = isCoastingOnRails
+      ? propagateKeplerianCoast(
+        updatedShip,
+        railCoastReferenceBody,
+        systemBodiesRef.current,
+        current.gameTime,
+        gameDt,
+        activeStarRef.current.mass * 1.989e30
+      )
+      : null;
+    updatedShip = railCoastShip || integrateSpacecraft(
       updatedShip,
       systemBodiesRef.current,
       current.gameTime,
@@ -501,6 +626,55 @@ ship: { ...updatedShip, throttlePercent: 0 },
       return;
     }
 
+    const activeClearance = dockingClearanceRef.current;
+    if (activeClearance && !current.isDocked) {
+      const dockBody = systemBodiesRef.current.find((body) => body.id === activeClearance.bodyId);
+      const dockPort = dockBody ? pickPortForBody(dockBody, "markets") || pickPortForBody(dockBody) : null;
+      if (!dockBody || !dockPort || dockPort.id !== activeClearance.portId) {
+        setDockingClearance(null);
+      } else {
+        const dockPos = getAbsoluteBodyPosition(dockBody.id, systemBodiesRef.current, current.gameTime);
+        const dockVelocity = getBodyVelocity(dockBody.id, systemBodiesRef.current, current.gameTime);
+        const dockSpecs = getDockingSpecs(dockBody);
+        const distance = Math.hypot(updatedShip.x - dockPos.x, updatedShip.y - dockPos.y);
+        const relSpeed = Math.hypot(updatedShip.vx - dockVelocity.vx, updatedShip.vy - dockVelocity.vy);
+        const alignmentError = getDockingAlignmentError(updatedShip, dockBody, dockPos, dockVelocity);
+        const insideEnvelope = distance < dockSpecs.maxDistance && relSpeed < dockSpecs.maxSpeed;
+        const aligned = alignmentError <= DOCKING_ALIGNMENT_TOLERANCE;
+
+        if (!insideEnvelope || !aligned) {
+          if (activeClearance.holdStartedAt !== null) {
+            setDockingClearance({ ...activeClearance, holdStartedAt: null });
+            addConsoleLog(`Docking control: hold reset at ${dockBody.stationName || dockBody.name}. Maintain envelope and alignment.`, "warning");
+          }
+        } else if (activeClearance.holdStartedAt === null) {
+          setDockingClearance({ ...activeClearance, holdStartedAt: current.gameTime });
+        } else if (current.gameTime - activeClearance.holdStartedAt >= DOCKING_HOLD_SECONDS) {
+          setAutopilotMode("none");
+          setIsThrusting(false);
+          setDockingClearance(null);
+          setGameState((prev) => ({
+            ...prev,
+            gameTime: current.gameTime + gameDt,
+            isDocked: true,
+            dockedBodyId: dockBody.id,
+            dockedPortId: dockPort.id,
+            miningTargetId: null,
+            ship: {
+              ...updatedShip,
+              vx: dockVelocity.vx,
+              vy: dockVelocity.vy,
+              throttlePercent: 0,
+            },
+          }));
+          addConsoleLog(`✓ Docking clamps engaged at ${dockBody.stationName || dockBody.name}. Trade networks unlocked.`, "success");
+          setActiveTab("market");
+          frameId = requestAnimationFrame(tick);
+          return;
+        }
+      }
+    }
+
     // --- 3. Manage Mining Operations ---
     let appendMarkets = { ...current.markets };
     let logsList = [...current.logs];
@@ -556,20 +730,34 @@ addConsoleLog("Drill Computer: Signal lost. Mining lasers disengaged (out of ran
 // Check proximity with every planet/moon/star. If inside body radius, ship crashes!
 let crashDetected = false;
 let crashedBodyName = "";
+const railImpactMetrics = railCoastShip
+? computeOrbitMetrics(current.ship, railCoastReferenceBody, systemBodiesRef.current, current.gameTime, posCache)
+: null;
+if (
+railImpactMetrics &&
+railImpactMetrics.periapsisAltitude <= 0 &&
+(railImpactMetrics.timeToPeriapsis === null || railImpactMetrics.timeToPeriapsis <= gameDt)
+) {
+crashDetected = true;
+crashedBodyName = railCoastReferenceBody.name;
+}
 
 // Star check
 const centerDist = Math.hypot(updatedShip.x, updatedShip.y);
-if (centerDist < 6.96e8 * 0.5) { // Star corona bounds
+const activeStarRadiusMeters = Math.max(1, activeStarRef.current.radius) * SUN_RADIUS_METERS;
+const starSegmentDist = segmentDistance(current.ship.x, current.ship.y, updatedShip.x, updatedShip.y, 0, 0);
+if (!crashDetected && (centerDist < activeStarRadiusMeters || starSegmentDist < activeStarRadiusMeters)) {
 crashDetected = true;
 crashedBodyName = `${activeStarRef.current.name} Photosphere`;
 }
 
 // Body checks using frame cache
-for (const body of systemBodiesRef.current) {
+if (!crashDetected) for (const body of systemBodiesRef.current) {
 const absByp = posCache.get(body.id);
 if (!absByp) continue;
 const dist = Math.hypot(updatedShip.x - absByp.x, updatedShip.y - absByp.y);
-if (dist < body.radius) {
+const pathDist = segmentDistance(current.ship.x, current.ship.y, updatedShip.x, updatedShip.y, absByp.x, absByp.y);
+if (dist < body.radius || pathDist < body.radius) {
 crashDetected = true;
 crashedBodyName = body.name;
 break;
@@ -728,7 +916,7 @@ addConsoleLog(`Disposed ${amount}t of ${resMarket.name} to refinery bay. Credite
 
 // Docking triggers
 const handleDockActivate = () => {
-if (!selectedBody || !selectedBody.hasMarket) return;
+if (!selectedBody || selectedBodyPorts.length === 0) return;
 if (!canDockAtSelectedBody) {
 const activeSpecs = getDockingSpecs(selectedBody);
 const maxAltKm = Math.round((activeSpecs.maxDistance - selectedBody.radius) / 1000);
@@ -745,24 +933,14 @@ addConsoleLog(`Docking denied by ${selectedBody.stationName || selectedBody.name
 return;
 }
 
-setAutopilotMode("none");
-setIsThrusting(false);
-setGameState((prev) => ({
-...prev,
-isDocked: true,
-dockedBodyId: selectedBody.id,
-dockedPortId: dockingPort.id,
-miningTargetId: null,
-ship: {
-...prev.ship,
-vx: selectedBodyVelocity.vx,
-vy: selectedBodyVelocity.vy,
-throttlePercent: 0,
-},
-}));
+const bodyPos = selectedBodyPosition || getAbsoluteBodyPosition(selectedBody.id, systemBodiesRef.current, gameState.gameTime);
+const alignmentError = getDockingAlignmentError(gameState.ship, selectedBody, bodyPos, selectedBodyVelocity);
+if (alignmentError > DOCKING_ALIGNMENT_TOLERANCE) {
+addConsoleLog(`Docking clearance pending at ${selectedBody.stationName || selectedBody.name}: align with approach corridor (${Math.round(alignmentError * 180 / Math.PI)}° error).`, "warning");
+}
 
-addConsoleLog(`✓ Spaceport tether established at ${selectedBody.stationName || selectedBody.name}. Standard atmospheres balanced. Trade networks unlocked.`, "success");
-setActiveTab("market"); // Open market tab instantly upon docking for frictionless UX!
+setDockingClearance({ bodyId: selectedBody.id, portId: dockingPort.id, holdStartedAt: null });
+addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName || selectedBody.name}. Hold inside approach envelope for ${DOCKING_HOLD_SECONDS}s while aligned.`, "info");
 };
 
 const handleUndockActivate = () => {
@@ -787,7 +965,9 @@ const offsetY = prev.ship.y - bodyPos.y;
 const offsetLength = Math.hypot(offsetX, offsetY);
 const ux = offsetLength > 1 ? offsetX / offsetLength : 1;
 const uy = offsetLength > 1 ? offsetY / offsetLength : 0;
-const parkingRadius = (dockBody.radius ?? 0) + Math.max(1_500_000, (dockBody.radius ?? 0) * 0.08);
+const parkingRadius = dockBody.type === "station"
+? (dockBody.radius ?? 0) + 25_000
+: (dockBody.radius ?? 0) + Math.max(1_500_000, (dockBody.radius ?? 0) * 0.08);
 const targetMass = dockBody.type === "star" ? (dockBody.mass ?? 0) * 1.989e30 : (dockBody.mass ?? 0);
 const circularSpeed = targetMass > 0 ? Math.sqrt((6.6743e-11 * targetMass) / Math.max(1, parkingRadius)) : 0;
 const tangentX = -uy;
@@ -969,7 +1149,6 @@ addConsoleLog(`🌌 COGNITIVE WAVEFOLD INITIATED: Spacetime folded relative to $
 
 const {
 pressedKeys,
-handleRotateShip,
 setShipHeading,
 setThrottlePercent,
 setPowerDistribution,
@@ -982,6 +1161,7 @@ setIsThrusting,
 addConsoleLog,
 stateRef,
 });
+pressedKeysRef.current = pressedKeys;
 
 const mapView = (
   <StarSystemCanvas
@@ -1105,9 +1285,11 @@ selectedBody={selectedBody}
 canDock={canDockAtSelectedBody}
 dockingDistance={dockingDistance}
 dockingRelativeSpeed={dockingRelativeSpeed}
+dockingClearance={dockingClearance}
 targetBearing={targetBearing}
 domGravityName={domGravity.body ? domGravity.body.name : activeStar.name}
 relativeOrbit={relativeOrbit}
+approachGuidance={approachGuidanceReadout}
 mapView={mapView}
 mapMode={mapMode}
 setMapMode={setMapMode}

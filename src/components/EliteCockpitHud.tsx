@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { CelestialBody, GameState, MissionLog, StarData } from "../types";
 import { OrbitMetrics, getDockingSpecs } from "../utils/physics";
+import type { ApproachGuidance } from "../utils/spaceFlightAutopilot";
 import { formatGameTime } from "../utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "../data/ships";
 import { AU } from "../data/stars";
@@ -30,7 +31,7 @@ import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName } 
 type CockpitTab = "nav" | "market" | "upgrades" | "contracts";
 type MapMode = "star" | "ship" | "target";
 type UiTheme = "amber" | "blue" | "green" | "red";
-type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target";
+type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target";
 
 interface EliteCockpitHudProps {
   gameState: GameState;
@@ -39,9 +40,11 @@ interface EliteCockpitHudProps {
   canDock: boolean;
   dockingDistance: number;
   dockingRelativeSpeed: number;
+  dockingClearance: { bodyId: string; portId: string; holdStartedAt: number | null } | null;
   targetBearing: number | null;
   domGravityName: string;
   relativeOrbit: OrbitMetrics | null;
+  approachGuidance: ApproachGuidance | null;
   mapView: React.ReactNode;
   mapMode: MapMode;
   setMapMode: (mode: MapMode) => void;
@@ -183,9 +186,11 @@ export function EliteCockpitHud({
   canDock,
   dockingDistance,
   dockingRelativeSpeed,
+  dockingClearance,
   targetBearing,
   domGravityName,
   relativeOrbit,
+  approachGuidance,
   mapView,
   mapMode,
   setMapMode,
@@ -214,7 +219,9 @@ export function EliteCockpitHud({
   const velocityAngle = speed > 1 ? Math.atan2(gameState.ship.vy, gameState.ship.vx) : null;
   const cargoUsed = Object.values(gameState.ship.cargo).reduce((sum, value) => sum + (value || 0), 0);
   const shipMass = gameState.ship.dryMass + gameState.ship.fuelLevel;
+  const dryMass = Math.max(1, gameState.ship.dryMass);
   const thrustAcceleration = gameState.ship.engineThrust / Math.max(1, shipMass);
+  const deltaV = gameState.ship.engineIsp * 9.80665 * Math.log(shipMass / dryMass);
   const throttle = gameState.ship.throttlePercent;
   const throttleTone = throttle > 0 ? "tone-hot" : throttle < 0 ? "tone-cyan" : "";
   const headingDeg = Math.round((((gameState.ship.heading * 180) / Math.PI) % 360 + 360) % 360);
@@ -271,6 +278,14 @@ export function EliteCockpitHud({
         <DataRow label="Frame" value={domGravityName} />
         <DataRow label="Clock" value={formatGameTime(gameState.gameTime).replace("Yr ", "")} />
         <DataRow label="Credits" value={`${gameState.playerCredits.toLocaleString()} cr`} tone="tone-cyan" />
+        {approachGuidance && (
+          <>
+            <DataRow label="AP Phase" value={approachGuidance.phase.toUpperCase()} tone="tone-cyan" />
+            <DataRow label="Closing" value={`${Math.round(approachGuidance.closingSpeed).toLocaleString()} / ${Math.round(approachGuidance.desiredClosingSpeed).toLocaleString()} m/s`} />
+            <DataRow label="Brake Dist" value={formatOrbitDistance(approachGuidance.brakingDistance)} />
+            <DataRow label="ETA" value={formatOrbitPeriod(approachGuidance.etaSeconds)} />
+          </>
+        )}
         <div className="elite-button-strip">
           {[1, 60, 600, 3600, 21600, 86400].map((value) => (
             <button key={value} className={gameState.timeScale === value ? "is-active" : ""} onClick={() => setTimeScale(value)}>
@@ -337,6 +352,7 @@ export function EliteCockpitHud({
                   tone={relativeOrbit.periapsisAltitude < 0 ? "tone-hot" : "tone-cyan"}
                 />
                 <DataRow label="Period" value={formatOrbitPeriod(relativeOrbit.orbitPeriod)} />
+                <DataRow label="Time to Pe" value={formatOrbitPeriod(relativeOrbit.timeToPeriapsis)} />
               </>
             )}
             {selectedBody.hasMarket && !gameState.isDocked && (() => {
@@ -345,6 +361,9 @@ export function EliteCockpitHud({
               const currentAltKm = Math.round(Math.max(0, dockingDistance - selectedBody.radius) / 1000);
               const rangeOk = currentAltKm < maxAltKm;
               const speedOk = dockingRelativeSpeed < activeSpecs.maxSpeed;
+              const holdSeconds = dockingClearance?.bodyId === selectedBody.id && dockingClearance.holdStartedAt !== null
+                ? Math.max(0, gameState.gameTime - dockingClearance.holdStartedAt)
+                : 0;
               return (
                 <>
                   <DataRow
@@ -356,6 +375,11 @@ export function EliteCockpitHud({
                     label="Dock Speed"
                     value={`${Math.round(dockingRelativeSpeed).toLocaleString()} / Max ${activeSpecs.maxSpeed.toLocaleString()} m/s`}
                     tone={speedOk ? "tone-cyan" : "text-zinc-500"}
+                  />
+                  <DataRow
+                    label="Clearance"
+                    value={dockingClearance?.bodyId === selectedBody.id ? `HOLD ${Math.min(10, Math.floor(holdSeconds))}/10s` : "REQUEST"}
+                    tone={dockingClearance?.bodyId === selectedBody.id ? "tone-cyan" : "text-zinc-500"}
                   />
                 </>
               );
@@ -390,12 +414,12 @@ export function EliteCockpitHud({
         <DataRow label="Frame" value={gameState.ship.name} tone="tone-cyan" />
         <DataRow label="Make" value={gameState.ship.manufacturer || SIDEWINDER_STARTER_PROFILE.manufacturer} />
         <DataRow label="Speed" value={`${Math.round(speed).toLocaleString()} m/s`} />
-        <DataRow label="Cruise / Boost" value={`${gameState.ship.maxCruiseSpeed}/${gameState.ship.maxBoostSpeed} m/s`} />
         <DataRow label="Hull" value={`${gameState.ship.baseArmour} armour`} />
         <DataRow label="Shield" value={`${shieldPercent}%`} />
         <DataRow label="Cargo" value={`${cargoUsed.toFixed(1)} / ${gameState.ship.cargoCapacity} t`} />
         <DataRow label="Fuel" value={`${Math.round(gameState.ship.fuelLevel).toLocaleString()} / ${gameState.ship.maxFuel.toLocaleString()} kg`} />
         <DataRow label="Mass" value={`${Math.round(shipMass).toLocaleString()} kg`} />
+        <DataRow label="Delta-V" value={`${Math.round(deltaV).toLocaleString()} m/s`} tone="tone-cyan" />
         <DataRow label="Accel" value={`${thrustAcceleration.toFixed(2)} m/s2`} />
       </HudPanel>
 
@@ -534,6 +558,15 @@ export function EliteCockpitHud({
                 <button
                   type="button"
                   disabled={!selectedBody || gameState.isDocked}
+                  className={autopilotMode === "goto-target" ? "is-active" : ""}
+                  onClick={() => setAutopilotMode(autopilotMode === "goto-target" ? "none" : "goto-target")}
+                  title="Transfer to selected body, coast on rails, then hand off to terminal approach"
+                >
+                  GO TO
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedBody || gameState.isDocked}
                   className={autopilotMode === "match-speed" ? "is-active" : ""}
                   onClick={() => setAutopilotMode(autopilotMode === "match-speed" ? "none" : "match-speed")}
                   title="Match velocity with target body"
@@ -548,6 +581,51 @@ export function EliteCockpitHud({
                   title="Circularize orbit around current body"
                 >
                   CIRC
+                </button>
+                <button
+                  type="button"
+                  disabled={gameState.isDocked}
+                  className={autopilotMode === "hold-prograde" ? "is-active" : ""}
+                  onClick={() => setAutopilotMode(autopilotMode === "hold-prograde" ? "none" : "hold-prograde")}
+                  title="Hold prograde attitude"
+                >
+                  PRO
+                </button>
+                <button
+                  type="button"
+                  disabled={gameState.isDocked}
+                  className={autopilotMode === "hold-retrograde" ? "is-active" : ""}
+                  onClick={() => setAutopilotMode(autopilotMode === "hold-retrograde" ? "none" : "hold-retrograde")}
+                  title="Hold retrograde attitude"
+                >
+                  RET
+                </button>
+                <button
+                  type="button"
+                  disabled={gameState.isDocked}
+                  className={autopilotMode === "hold-radial-out" ? "is-active" : ""}
+                  onClick={() => setAutopilotMode(autopilotMode === "hold-radial-out" ? "none" : "hold-radial-out")}
+                  title="Hold radial-out attitude from dominant gravity body"
+                >
+                  R+
+                </button>
+                <button
+                  type="button"
+                  disabled={gameState.isDocked}
+                  className={autopilotMode === "hold-radial-in" ? "is-active" : ""}
+                  onClick={() => setAutopilotMode(autopilotMode === "hold-radial-in" ? "none" : "hold-radial-in")}
+                  title="Hold radial-in attitude toward dominant gravity body"
+                >
+                  R-
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedBody || gameState.isDocked}
+                  className={autopilotMode === "hold-anti-target" ? "is-active" : ""}
+                  onClick={() => setAutopilotMode(autopilotMode === "hold-anti-target" ? "none" : "hold-anti-target")}
+                  title="Hold anti-target attitude"
+                >
+                  ANTI
                 </button>
               </div>
               <div className="elite-battery-row">

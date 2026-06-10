@@ -6,6 +6,7 @@
 import { CelestialBody, ShipState } from "../types";
 
 const G = 6.6743e-11; // Gravitational Constant m^3 kg^-1 s^-2
+const G0 = 9.80665;
 const MIN_GRAVITY_DISTANCE = 1e4;
 
 function addGravityFromPoint(
@@ -196,21 +197,35 @@ export function getBodyVelocity(
   };
 }
 
-/**
- * Calculate Sphere of Influence (SOI) radius for a planet orbiting a star.
- * SOI = a * (m_planet / m_star)^(2/5)
- * If star mass is not available, we assume a standard mass ratio or default.
- */
-export function getSphereOfInfluence(body: CelestialBody, starMass: number = 1.989e30): number {
-  if (body.type === "star" || !body.parentId) return Infinity;
-  
-  if (body.type === "moon") {
-    // Moons orbit planets. Scale relative to parent planet
-    return body.semiMajorAxis * Math.pow((body.mass ?? 0) / 5.972e24, 0.4); // approximated bound
+function getBodyDepth(body: CelestialBody, allBodies: CelestialBody[]): number {
+  let depth = 0;
+  let current: CelestialBody | undefined = body;
+  const seen = new Set<string>();
+
+  while (current?.parentId && !seen.has(current.id)) {
+    seen.add(current.id);
+    depth += 1;
+    current = allBodies.find((entry) => entry.id === current!.parentId);
   }
 
-  // Planet orbiting star
-  return body.semiMajorAxis * Math.pow((body.mass ?? 0) / starMass, 0.4);
+  return depth;
+}
+
+function getParentMass(body: CelestialBody, allBodies: CelestialBody[], starMass: number): number {
+  if (!body.parentId) return starMass;
+  const parent = allBodies.find((entry) => entry.id === body.parentId);
+  if (!parent) return starMass;
+  return parent.type === "star" ? starMass : parent.mass ?? starMass;
+}
+
+/**
+ * Calculate Sphere of Influence (SOI) radius for a body orbiting its parent.
+ * SOI = a * (m_body / m_parent)^(2/5)
+ */
+export function getSphereOfInfluence(body: CelestialBody, parentMass: number = 1.989e30): number {
+  if (body.type === "star" || !body.parentId) return Infinity;
+  if ((body.mass ?? 0) <= 0 || parentMass <= 0) return 0;
+  return body.semiMajorAxis * Math.pow((body.mass ?? 0) / parentMass, 0.4);
 }
 
 /**
@@ -225,43 +240,30 @@ export function getDominantGravitySource(
   starMass: number = 1.989e30,
   posCache?: BodyPosCache
 ): { body: CelestialBody | null; distance: number; soi: number } {
-  // First locate star
   const star = bodies.find((b) => b.type === "star") || null;
   let dominantBody: CelestialBody | null = star;
   let dominantDist = star ? Math.hypot(shipX, shipY) : Infinity;
   let activeSOI = Infinity;
+  let dominantDepth = star ? 0 : -1;
 
-  // Check planets & moons to see if ship is inside their SOI
   for (const body of bodies) {
     if (body.type === "star") continue;
 
     const absPos = posCache ? getCachedPosition(posCache, body.id) : getAbsoluteBodyPosition(body.id, bodies, time);
     const dist = Math.hypot(shipX - absPos.x, shipY - absPos.y);
-    const soi = getSphereOfInfluence(body, starMass);
+    const parentMass = getParentMass(body, bodies, starMass);
+    const soi = getSphereOfInfluence(body, parentMass);
+    if (soi <= 0 || dist >= soi) continue;
 
-    if (dist < soi) {
-      // Ship is within this planet/moon's sphere of influence
+    const depth = getBodyDepth(body, bodies);
+    const isBetterNestedMatch = depth > dominantDepth;
+    const isSameDepthCloser = depth === dominantDepth && dist / soi < dominantDist / activeSOI;
+
+    if (isBetterNestedMatch || isSameDepthCloser) {
       dominantBody = body;
       dominantDist = dist;
       activeSOI = soi;
-      // We check if this body has child moons which the player could be closer to
-      break;
-    }
-  }
-
-  // If inside a planet, check its moons specifically
-  if (dominantBody && dominantBody.type === "planet") {
-    const moons = bodies.filter((b) => b.parentId === dominantBody!.id && b.type === "moon");
-    for (const moon of moons) {
-      const absPos = posCache ? getCachedPosition(posCache, moon.id) : getAbsoluteBodyPosition(moon.id, bodies, time);
-      const dist = Math.hypot(shipX - absPos.x, shipY - absPos.y);
-      const soi = getSphereOfInfluence(moon, dominantBody!.mass ?? 0);
-      if (dist < soi) {
-        dominantBody = moon;
-        dominantDist = dist;
-        activeSOI = soi;
-        break;
-      }
+      dominantDepth = depth;
     }
   }
 
@@ -286,10 +288,20 @@ export function integrateSpacecraft(
   const thrustScale = Math.abs(clampedThrottle) / 100;
   const thrustDirection = clampedThrottle >= 0 ? 1 : -1;
 
-  // Handle extreme time-warp by sub-stepping the orbital integration
-  // Doing a max of 20 sub-steps to prevent browser freezes, while maintaining orbit integration accuracy
-  const maxSubsteps = 15;
-  const substeps = Math.min(maxSubsteps, Math.ceil(dt / 300)); // e.g. if dt is 3600s (1hr), do 15 steps
+  const referenceBody = getDominantGravitySource(x, y, bodies, timeStart, starMass, posCache).body;
+  const referencePos = referenceBody
+    ? (posCache ? getCachedPosition(posCache, referenceBody.id) : getAbsoluteBodyPosition(referenceBody.id, bodies, timeStart))
+    : { x: 0, y: 0 };
+  const referenceMu = referenceBody
+    ? G * (referenceBody.type === "star" ? starMass : referenceBody.mass ?? 0)
+    : 0;
+  const referenceDistance = Math.max(1, Math.hypot(x - referencePos.x, y - referencePos.y));
+  const localOrbitPeriod = referenceMu > 0
+    ? 2 * Math.PI * Math.sqrt((referenceDistance * referenceDistance * referenceDistance) / referenceMu)
+    : Infinity;
+  const maxSubDt = Math.min(300, Number.isFinite(localOrbitPeriod) ? localOrbitPeriod / 120 : 300);
+  const maxSubsteps = 240;
+  const substeps = Math.min(maxSubsteps, Math.max(1, Math.ceil(dt / Math.max(1, maxSubDt))));
   const subDt = dt / substeps;
 
   for (let s = 0; s < substeps; s++) {
@@ -301,9 +313,15 @@ export function integrateSpacecraft(
     // Add continuous thrust if operating thrusters
     const totalMass = dryMass + fuelLevel;
     if (thrustScale > 0 && fuelLevel > 0) {
-      const thrustAcc = (engineThrust * thrustScale) / totalMass;
+      const requestedThrust = engineThrust * thrustScale;
+      const safeIsp = Math.max(1, engineIsp);
+      const requestedFuelBurn = (requestedThrust / (safeIsp * G0)) * subDt;
+      const fuelFractionAvailable = requestedFuelBurn > 0 ? Math.min(1, fuelLevel / requestedFuelBurn) : 1;
+      const effectiveThrust = requestedThrust * fuelFractionAvailable;
+      const thrustAcc = effectiveThrust / totalMass;
       accX += thrustAcc * Math.cos(heading) * thrustDirection;
       accY += thrustAcc * Math.sin(heading) * thrustDirection;
+      fuelLevel = Math.max(0, fuelLevel - requestedFuelBurn);
     }
 
     // Standard Euler-Cromer integration
@@ -338,6 +356,7 @@ export interface OrbitMetrics {
   periapsisAltitude: number;
   apoapsisAltitude: number | null;
   orbitPeriod: number | null;
+  timeToPeriapsis: number | null;
 }
 
 export function computeOrbitMetrics(
@@ -395,6 +414,26 @@ export function computeOrbitMetrics(
   const orbitPeriod = eccentricity < 1 && semimajorAxis > 0 && mu > 0
     ? 2 * Math.PI * Math.sqrt((semimajorAxis * semimajorAxis * semimajorAxis) / mu)
     : null;
+  let timeToPeriapsis: number | null = null;
+  if (orbitPeriod !== null && eccentricity > 1e-6 && eccentricity < 1 && semimajorAxis > 0 && mu > 0) {
+    const dotRv = dx * relVx + dy * relVy;
+    const eVecX = ((relSpeed * relSpeed - mu / distance) * dx - dotRv * relVx) / mu;
+    const eVecY = ((relSpeed * relSpeed - mu / distance) * dy - dotRv * relVy) / mu;
+    const eMag = Math.hypot(eVecX, eVecY);
+    if (eMag > 1e-6) {
+      const cosNu = (eVecX * dx + eVecY * dy) / (eMag * distance);
+      const sinNu = (eVecX * dy - eVecY * dx) / (eMag * distance);
+      const nu = Math.atan2(sinNu, cosNu);
+      const cosE = (eMag + Math.cos(nu)) / (1 + eMag * Math.cos(nu));
+      const sinE = (Math.sqrt(1 - eMag * eMag) * Math.sin(nu)) / (1 + eMag * Math.cos(nu));
+      const eccentricAnomaly = Math.atan2(sinE, cosE);
+      const meanAnomaly = ((eccentricAnomaly - eMag * Math.sin(eccentricAnomaly)) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+      const meanMotion = Math.sqrt(mu / (semimajorAxis * semimajorAxis * semimajorAxis));
+      const timeSincePeriapsis = meanAnomaly / meanMotion;
+      timeToPeriapsis = orbitPeriod - timeSincePeriapsis;
+      if (timeToPeriapsis < 1) timeToPeriapsis = 0;
+    }
+  }
 
   return {
     altitude,
@@ -408,7 +447,133 @@ export function computeOrbitMetrics(
     periapsisAltitude: periapsisRadius - bodyRadius,
     apoapsisAltitude: apoapsisRadius === null ? null : apoapsisRadius - bodyRadius,
     orbitPeriod,
+    timeToPeriapsis,
   };
+}
+
+export function propagateKeplerianCoast(
+  ship: ShipState,
+  targetBody: CelestialBody | null,
+  bodies: CelestialBody[],
+  timeStart: number,
+  dt: number,
+  starMass: number = 1.989e30,
+  patchDepth: number = 2
+): ShipState | null {
+  if (!targetBody || dt <= 0) return null;
+
+  const mu = G * (targetBody.type === "star" ? starMass : targetBody.mass ?? 0);
+  if (mu <= 0) return null;
+
+  const targetPos0 = getAbsoluteBodyPosition(targetBody.id, bodies, timeStart);
+  const targetVel0 = getBodyVelocity(targetBody.id, bodies, timeStart);
+  const rx = ship.x - targetPos0.x;
+  const ry = ship.y - targetPos0.y;
+  const vx = ship.vx - targetVel0.vx;
+  const vy = ship.vy - targetVel0.vy;
+  const r = Math.hypot(rx, ry);
+  const v2 = vx * vx + vy * vy;
+  if (r <= 1 || !Number.isFinite(r) || !Number.isFinite(v2)) return null;
+
+  const energy = v2 / 2 - mu / r;
+  if (energy >= 0) return null;
+
+  const a = -mu / (2 * energy);
+  const h = rx * vy - ry * vx;
+  if (Math.abs(h) < 1e-6 || !Number.isFinite(a) || a <= 0) return null;
+
+  const eVecX = ((v2 - mu / r) * rx - (rx * vx + ry * vy) * vx) / mu;
+  const eVecY = ((v2 - mu / r) * ry - (rx * vx + ry * vy) * vy) / mu;
+  const e = Math.hypot(eVecX, eVecY);
+  if (e >= 1 || e < 1e-8) {
+    const meanMotion = Math.sqrt(mu / (a * a * a));
+    const angle0 = Math.atan2(ry, rx);
+    const direction = h >= 0 ? 1 : -1;
+    const angle = angle0 + direction * meanMotion * dt;
+    const radius = a;
+    const speed = Math.sqrt(mu / radius);
+    const targetPos1 = getAbsoluteBodyPosition(targetBody.id, bodies, timeStart + dt);
+    const targetVel1 = getBodyVelocity(targetBody.id, bodies, timeStart + dt);
+    const circularResult = {
+      ...ship,
+      x: targetPos1.x + Math.cos(angle) * radius,
+      y: targetPos1.y + Math.sin(angle) * radius,
+      vx: targetVel1.vx - Math.sin(angle) * speed * direction,
+      vy: targetVel1.vy + Math.cos(angle) * speed * direction,
+    };
+    return patchCoastIfSoiChanges(circularResult, ship, targetBody, bodies, timeStart, dt, starMass, patchDepth);
+  }
+
+  const cosNu = (eVecX * rx + eVecY * ry) / (e * r);
+  const sinNu = (eVecX * ry - eVecY * rx) / (e * r);
+  const nu = Math.atan2(sinNu, cosNu);
+  const cosE0 = (e + Math.cos(nu)) / (1 + e * Math.cos(nu));
+  const sinE0 = (Math.sqrt(1 - e * e) * Math.sin(nu)) / (1 + e * Math.cos(nu));
+  const E0 = Math.atan2(sinE0, cosE0);
+  const M0 = E0 - e * Math.sin(E0);
+  const meanMotion = Math.sqrt(mu / (a * a * a));
+  const E = solveKepler(M0 + meanMotion * dt, e);
+  const orbitalX = a * (Math.cos(E) - e);
+  const orbitalY = a * Math.sqrt(1 - e * e) * Math.sin(E);
+  const edotDenominator = 1 - e * Math.cos(E);
+  if (Math.abs(edotDenominator) < 1e-8) return null;
+
+  const localVx = -a * meanMotion * Math.sin(E) / edotDenominator;
+  const localVy = a * meanMotion * Math.sqrt(1 - e * e) * Math.cos(E) / edotDenominator;
+  const periapsisAngle = Math.atan2(eVecY, eVecX);
+  const cosW = Math.cos(periapsisAngle);
+  const sinW = Math.sin(periapsisAngle);
+  const direction = h >= 0 ? 1 : -1;
+  const targetPos1 = getAbsoluteBodyPosition(targetBody.id, bodies, timeStart + dt);
+  const targetVel1 = getBodyVelocity(targetBody.id, bodies, timeStart + dt);
+
+  const result = {
+    ...ship,
+    x: targetPos1.x + orbitalX * cosW - orbitalY * sinW * direction,
+    y: targetPos1.y + orbitalX * sinW + orbitalY * cosW * direction,
+    vx: targetVel1.vx + localVx * cosW - localVy * sinW * direction,
+    vy: targetVel1.vy + localVx * sinW + localVy * cosW * direction,
+  };
+  return patchCoastIfSoiChanges(result, ship, targetBody, bodies, timeStart, dt, starMass, patchDepth);
+}
+
+function patchCoastIfSoiChanges(
+  result: ShipState,
+  startShip: ShipState,
+  startBody: CelestialBody,
+  bodies: CelestialBody[],
+  timeStart: number,
+  dt: number,
+  starMass: number,
+  patchDepth: number
+): ShipState | null {
+  if (patchDepth <= 0) return result;
+
+  const endCache = buildBodyPositionCache(bodies, timeStart + dt);
+  const endDominant = getDominantGravitySource(result.x, result.y, bodies, timeStart + dt, starMass, endCache).body;
+  if (!endDominant || endDominant.id === startBody.id) return result;
+
+  let low = 0;
+  let high = dt;
+  let transitionShip: ShipState | null = result;
+
+  for (let i = 0; i < 18; i++) {
+    const mid = (low + high) / 2;
+    const midShip = propagateKeplerianCoast(startShip, startBody, bodies, timeStart, mid, starMass, 0);
+    if (!midShip) return result;
+
+    const midCache = buildBodyPositionCache(bodies, timeStart + mid);
+    const midDominant = getDominantGravitySource(midShip.x, midShip.y, bodies, timeStart + mid, starMass, midCache).body;
+    if (midDominant?.id === startBody.id) {
+      low = mid;
+    } else {
+      high = mid;
+      transitionShip = midShip;
+    }
+  }
+
+  if (!transitionShip) return result;
+  return propagateKeplerianCoast(transitionShip, endDominant, bodies, timeStart + high, dt - high, starMass, patchDepth - 1) ?? result;
 }
 
 /**
@@ -433,6 +598,18 @@ export function predictShipRoute(
 
   for (let i = 0; i <= stepsCount; i++) {
     points.push({ x: tempShip.x, y: tempShip.y });
+    if (i === stepsCount) break;
+
+    if (Math.abs(throttlePercent) <= 0.001) {
+      const cache = posCache ?? buildBodyPositionCache(bodies, timeStart + i * dt);
+      const dominant = getDominantGravitySource(tempShip.x, tempShip.y, bodies, timeStart + i * dt, starMass, cache);
+      const coastShip = propagateKeplerianCoast(tempShip, dominant.body || bodies[0], bodies, timeStart + i * dt, dt, starMass);
+      if (coastShip) {
+        tempShip = coastShip;
+        continue;
+      }
+    }
+
     tempShip = integrateSpacecraft(tempShip, bodies, timeStart + i * dt, dt, throttlePercent, starMass, posCache);
   }
 
@@ -445,27 +622,26 @@ export function predictShipRoute(
  */
 export function getDockingSpecs(body: CelestialBody | null): { maxDistance: number; maxSpeed: number } {
   if (!body) return { maxDistance: 1.2e6, maxSpeed: 600 };
-  
-  // Space tethers like Earth "Orbital Tether One" extend to geostationary orbit
-  if (body.stationName && (body.stationName.toLowerCase().includes("tether") || body.id === "sol_earth" || body.name === "Earth")) {
+
+  if (body.type === "station") {
+    const isTether = body.name.toLowerCase().includes("tether") || body.stationName?.toLowerCase().includes("tether");
     return {
-      maxDistance: body.radius + 36.0e6, // up to 36,000 km altitude (space tethers are massive)
-      maxSpeed: 2500, // up to 2,500 m/s relative speed
+      maxDistance: (body.radius ?? 0) + (isTether ? 250_000 : 50_000),
+      maxSpeed: 25,
     };
   }
 
-  // Large celestial ports
   if (body.type === "planet") {
     return {
-      maxDistance: body.radius + 5.0e6, // up to 5,000 km altitude (more generous)
-      maxSpeed: 1500, // up to 1,500 m/s for easier maneuvering
+      maxDistance: body.radius + 200_000,
+      maxSpeed: 50,
     };
   }
 
   // Moons or smaller asteroid bodies containing stations
   return {
-    maxDistance: body.radius + 2.0e6, // up to 2,000 km altitude
-    maxSpeed: 1000, // up to 1,000 m/s
+    maxDistance: body.radius + 200_000,
+    maxSpeed: 50,
   };
 }
 

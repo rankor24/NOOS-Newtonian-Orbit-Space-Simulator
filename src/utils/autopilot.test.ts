@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { computeApproachGuidance } from "./autopilot";
+import { computeTransferGuidance } from "./transferPlanner";
 
 const EPS = 1e-6;
 const assertAngleNear = (actual: number, expected: number) => {
@@ -30,9 +31,9 @@ const assertAngleNear = (actual: number, expected: number) => {
     maxAcceleration: 10,
   });
 
-  assert.equal(guidance.phase, "brake");
-  assertAngleNear(guidance.targetHeading, Math.PI); // prograde relative velocity pointing left (Math.PI)
-  assert.ok(guidance.throttlePercent < 0); // reverse throttle applied!
+  assert.equal(guidance.phase, "match");
+  assertAngleNear(guidance.targetHeading, 0); // burn against incoming relative velocity
+  assert.ok(guidance.throttlePercent > 0);
 }
 
 {
@@ -46,4 +47,40 @@ const assertAngleNear = (actual: number, expected: number) => {
 
   assert.equal(guidance.phase, "arrived");
   assert.equal(guidance.throttlePercent, 0);
+}
+
+{
+  const guidance = computeTransferGuidance({
+    dx: 100_000_000,
+    dy: 0,
+    relVx: 0,
+    relVy: 0,
+    maxAcceleration: 20,
+    targetMass: 5.972e24,
+    bodyRadius: 6.371e6,
+    terminalDistance: 20_000_000,
+    terminalSpeed: 500,
+  });
+
+  assert.equal(guidance.phase, "accelerate");
+  assertAngleNear(guidance.targetHeading, Math.PI);
+  assert.ok(guidance.throttlePercent > 0);
+}
+
+{
+  const guidance = computeTransferGuidance({
+    dx: 100_000_000,
+    dy: 0,
+    relVx: -80_000,
+    relVy: 0,
+    maxAcceleration: 20,
+    targetMass: 5.972e24,
+    bodyRadius: 6.371e6,
+    terminalDistance: 20_000_000,
+    terminalSpeed: 500,
+  });
+
+  assert.equal(guidance.phase, "brake");
+  assertAngleNear(guidance.targetHeading, 0);
+  assert.ok(guidance.throttlePercent > 0);
 }

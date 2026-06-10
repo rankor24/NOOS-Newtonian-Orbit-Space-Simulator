@@ -1,9 +1,15 @@
 import { CelestialBody } from "../../types";
 import { SOL_MOONS_GENERATED } from "./sol-moons";
 import { SOL_SMALL_BODIES_GENERATED } from "./sol-small-bodies";
+import { SPACE_STATIONS, type SpaceStation } from "./names";
 
 const AU = 1.496e11;
 const DAY_SEC = 86400;
+const G = 6.6743e-11;
+
+const ORBIT_BODY_ALIASES: Record<string, string> = {
+  sol_luna: "sol_moon",
+};
 
 const sol = (body: Omit<CelestialBody, "parentId"> & { parentId?: string | null }): CelestialBody => ({
   parentId: "star_sol",
@@ -66,7 +72,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#3b82f6",
     description: "Human homeworld. Main economic hub and starter-zone anchor body.",
     hasMarket: true,
-    stationName: "Orbital Tether One",
+    stationName: "Tether City One",
     semiMajorAxis: 1.00000011 * AU,
     eccentricity: 0.01671022,
     orbitalPeriod: 365.256 * DAY_SEC,
@@ -83,7 +89,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#f97316",
     description: "Red terrestrial world with major industrial expansion and transfer-orbit relevance.",
     hasMarket: true,
-    stationName: "Phobos Drydock",
+    stationName: "Olympus Overlook",
     semiMajorAxis: 1.52366231 * AU,
     eccentricity: 0.09341233,
     orbitalPeriod: 686.98 * DAY_SEC,
@@ -100,7 +106,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#fed7aa",
     description: "Largest planet in Sol. Dominant outer-system gravity source.",
     hasMarket: true,
-    stationName: "Ganymede Logistics Hub",
+    stationName: "Kibo Radiation Lab",
     semiMajorAxis: 5.20336301 * AU,
     eccentricity: 0.04839266,
     orbitalPeriod: 4332.59 * DAY_SEC,
@@ -117,7 +123,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#fef08a",
     description: "Ringed giant with major moon system and strong outer-system economy potential.",
     hasMarket: true,
-    stationName: "Titan Ice Station",
+    stationName: undefined,
     semiMajorAxis: 9.53707032 * AU,
     eccentricity: 0.0541506,
     orbitalPeriod: 10759.22 * DAY_SEC,
@@ -134,7 +140,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#67e8f9",
     description: "Ice giant with tilted rotation axis and extensive moon system.",
     hasMarket: true,
-    stationName: "Titania Relay",
+    stationName: undefined,
     semiMajorAxis: 19.19126393 * AU,
     eccentricity: 0.04716771,
     orbitalPeriod: 30688.5 * DAY_SEC,
@@ -151,7 +157,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#2563eb",
     description: "Outer ice giant. Gateway to Kuiper Belt gameplay.",
     hasMarket: true,
-    stationName: "Triton Frontier Port",
+    stationName: undefined,
     semiMajorAxis: 30.06896348 * AU,
     eccentricity: 0.00858587,
     orbitalPeriod: 60182.0 * DAY_SEC,
@@ -168,7 +174,7 @@ const SOL_MAJOR_BODIES: CelestialBody[] = [
     color: "#cbd5e1",
     description: "Dwarf planet in resonant outer Sol orbit. Marker for Kuiper Belt frontier.",
     hasMarket: true,
-    stationName: "Charon Gate",
+    stationName: undefined,
     semiMajorAxis: 39.482 * AU,
     eccentricity: 0.2488,
     orbitalPeriod: 90560 * DAY_SEC,
@@ -259,7 +265,7 @@ const SOL_PLUTO_MOONS: CelestialBody[] = [
   }),
 ];
 
-export const SOL_BODIES_GENERATED: CelestialBody[] = [
+const SOL_ORBIT_PARENTS: CelestialBody[] = [
   ...SOL_MAJOR_BODIES,
   ...SOL_MOONS_GENERATED.filter(
     (b) => !(/^[Ss]\d/.test(b.name) || /^[Ss]\//.test(b.name) || /^[Ss]_\d/.test(b.name) || /\d{4}/.test(b.name) || /^[Ss]\s*\d/.test(b.name))
@@ -268,4 +274,94 @@ export const SOL_BODIES_GENERATED: CelestialBody[] = [
   ...SOL_SMALL_BODIES_GENERATED.filter(
     (b) => !(/^[Ss]\d/.test(b.name) || /^[Ss]\//.test(b.name) || /^[Ss]_\d/.test(b.name) || /\d{4}/.test(b.name) || /^[Ss]\s*\d/.test(b.name))
   ),
+];
+
+const STATION_ALTITUDE_BY_ID: Record<string, number> = {
+  station_earth_low: 35_786_000,
+  station_earth_mid: 24_000_000,
+  station_mir2: 18_000_000,
+  station_liberty: 42_000_000,
+  station_mars_phobos: 17_000_000,
+  station_vostok: 20_000_000,
+  station_ganymede: 2_500_000,
+  station_titan: 1_800_000,
+  station_uranus: 90_000_000,
+  station_neptune: 80_000_000,
+  station_pluto: 8_000_000,
+  station_belt_capricorn: 800_000,
+  station_belt_lyra: 800_000,
+  station_zarya: 3_500_000,
+  station_kaguya: 4_000_000,
+  station_odyssey: 6_000_000,
+};
+
+function resolveOrbitBodyId(orbitBodyId: string): string {
+  return ORBIT_BODY_ALIASES[orbitBodyId] || orbitBodyId;
+}
+
+function getStationDisplayColor(station: SpaceStation): string {
+  if (station.type === "shipyard") return "#38bdf8";
+  if (station.type === "research") return "#22d3ee";
+  if (station.type === "asteroid") return "#f59e0b";
+  return "#a78bfa";
+}
+
+function getDefaultStationAltitude(parent: CelestialBody): number {
+  const radius = parent.radius ?? 0;
+  if (parent.type === "moon") return Math.max(1_500_000, radius * 1.5);
+  if (parent.type === "asteroid" || parent.type === "comet") return Math.max(500_000, radius * 4);
+  if (parent.type === "dwarfPlanet") return Math.max(5_000_000, radius * 4);
+  return Math.max(12_000_000, radius * 1.2);
+}
+
+function getStationPhase(stationId: string): number {
+  let hash = 0;
+  for (let i = 0; i < stationId.length; i += 1) {
+    hash = (hash * 31 + stationId.charCodeAt(i)) >>> 0;
+  }
+  return (hash / 0xffffffff) * Math.PI * 2;
+}
+
+function makeStationBody(station: SpaceStation, parent: CelestialBody): CelestialBody {
+  const altitude = STATION_ALTITUDE_BY_ID[station.id] ?? getDefaultStationAltitude(parent);
+  const semiMajorAxis = (parent.radius ?? 0) + altitude;
+  const parentMass = parent.mass ?? 0;
+  const orbitalPeriod = parentMass > 0
+    ? 2 * Math.PI * Math.sqrt(Math.pow(semiMajorAxis, 3) / (G * parentMass))
+    : DAY_SEC;
+
+  return {
+    id: station.id,
+    name: station.name,
+    type: "station",
+    mass: 0,
+    radius: station.type === "shipyard" ? 1_800 : station.type === "asteroid" ? 3_000 : 900,
+    gravitySource: false,
+    color: getStationDisplayColor(station),
+    parentId: parent.id,
+    description: station.description,
+    hasMarket: true,
+    stationName: station.name,
+    source: "Curated station orbit catalog",
+    epoch: "curated-static",
+    semiMajorAxis,
+    eccentricity: 0,
+    orbitalPeriod,
+    inclination: 0,
+    argumentOfPeriapsis: 0,
+    meanAnomalyAtEpoch: getStationPhase(station.id),
+  };
+}
+
+const SOL_SPACE_STATIONS: CelestialBody[] = SPACE_STATIONS.flatMap((station) => {
+  if (!station.orbitBodyId) return [];
+  const parentId = resolveOrbitBodyId(station.orbitBodyId);
+  const parent = SOL_ORBIT_PARENTS.find((body) => body.id === parentId);
+  if (!parent) return [];
+  return [makeStationBody(station, parent)];
+});
+
+export const SOL_BODIES_GENERATED: CelestialBody[] = [
+  ...SOL_ORBIT_PARENTS,
+  ...SOL_SPACE_STATIONS,
 ];

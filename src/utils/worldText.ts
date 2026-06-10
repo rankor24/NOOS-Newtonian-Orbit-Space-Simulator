@@ -25,6 +25,7 @@ import {
 export type PortRecord = {
   id: string;
   bodyId: string;
+  orbitBodyId?: string;
   name: string;
   faction: string;
   description: string;
@@ -46,6 +47,37 @@ const JOB_CARGO_LABELS: Record<string, string> = {
 export function getPortsForBody(body: CelestialBody | null | undefined): PortRecord[] {
   if (!body) return [];
 
+  const stations = SPACE_STATIONS.filter((entry) => entry.id === body.id).map((entry) => ({
+    id: entry.id,
+    bodyId: body.id,
+    orbitBodyId: entry.orbitBodyId,
+    name: entry.name,
+    faction: entry.faction,
+    description: entry.description,
+    services: entry.services,
+    kind: "station" as const,
+    bodyType: body.type,
+    bodyName: body.name,
+  }));
+
+  if (body.type === "station") {
+    if (stations.length > 0) return stations;
+    if (!body.hasMarket) return [];
+
+    return [{
+      id: body.id,
+      bodyId: body.id,
+      orbitBodyId: body.parentId || undefined,
+      name: body.stationName || body.name,
+      faction: "Independent Traffic Control",
+      description: body.description,
+      services: ["repair", "refuel", "markets"],
+      kind: "station",
+      bodyType: body.type,
+      bodyName: body.name,
+    }];
+  }
+
   const bases = PLANETARY_BASES.filter((entry) => entry.bodyId === body.id).map((entry) => ({
     id: entry.id,
     bodyId: body.id,
@@ -58,20 +90,7 @@ export function getPortsForBody(body: CelestialBody | null | undefined): PortRec
     bodyName: body.name,
   }));
 
-  const stations = SPACE_STATIONS.filter((entry) => entry.orbitBodyId === body.id).map((entry) => ({
-    id: entry.id,
-    bodyId: body.id,
-    name: entry.name,
-    faction: entry.faction,
-    description: entry.description,
-    services: entry.services,
-    kind: "station" as const,
-    bodyType: body.type,
-    bodyName: body.name,
-  }));
-
-  const ports = [...bases, ...stations];
-  if (ports.length > 0) return ports;
+  if (bases.length > 0) return bases;
 
   if (!body.hasMarket) return [];
 
