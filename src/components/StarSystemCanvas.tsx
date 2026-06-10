@@ -641,20 +641,22 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     ctx.setLineDash(selected ? [] : isStation ? [2, 6] : [4, 8]);
     ctx.beginPath();
 
+    // Hot loop (runs for every visible body every frame): scalar math only,
+    // no per-segment object allocations to keep GC pressure down.
     const steps = 96;
+    const cos = Math.cos(body.argumentOfPeriapsis);
+    const sin = Math.sin(body.argumentOfPeriapsis);
+    const minorAxisFactor = Math.sqrt(1 - body.eccentricity * body.eccentricity);
     for (let i = 0; i <= steps; i += 1) {
       const angle = (i / steps) * Math.PI * 2;
       const ellipseX = body.semiMajorAxis * (Math.cos(angle) - body.eccentricity);
-      const ellipseY = body.semiMajorAxis * Math.sqrt(1 - body.eccentricity * body.eccentricity) * Math.sin(angle);
-      const cos = Math.cos(body.argumentOfPeriapsis);
-      const sin = Math.sin(body.argumentOfPeriapsis);
-      const world = {
-        x: parentPos.x + ellipseX * cos - ellipseY * sin,
-        y: parentPos.y + ellipseX * sin + ellipseY * cos,
-      };
-      const pt = toScreen(world, center, width, height);
-      if (i === 0) ctx.moveTo(pt.x, pt.y);
-      else ctx.lineTo(pt.x, pt.y);
+      const ellipseY = body.semiMajorAxis * minorAxisFactor * Math.sin(angle);
+      const worldX = parentPos.x + ellipseX * cos - ellipseY * sin;
+      const worldY = parentPos.y + ellipseX * sin + ellipseY * cos;
+      const px = width / 2 + (worldX - center.x) * scale;
+      const py = height / 2 + (worldY - center.y) * scale;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
     }
 
     ctx.stroke();

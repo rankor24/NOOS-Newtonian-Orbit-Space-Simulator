@@ -10,6 +10,8 @@ export interface TransferGuidanceInput {
   bodyRadius: number;
   terminalDistance: number;
   terminalSpeed: number;
+  /** Tsiolkovsky delta-v remaining (m/s). Caps transfer speed so the ship can still brake. */
+  deltaVBudget?: number;
 }
 
 const G = 6.6743e-11;
@@ -34,8 +36,14 @@ export function computeTransferGuidance(input: TransferGuidanceInput): ApproachG
   const closingSpeed = -radialOutSpeed;
   const rangeToTerminal = Math.max(0, distance - terminalDistance);
   const controlledDecel = maxAcceleration * 0.35;
+  // Brachistochrone-style profile: accelerate as long as the remaining range still
+  // allows a controlled brake. The only speed cap is the propellant ledger - spend at
+  // most ~1/3 of remaining delta-v on the outbound leg so braking is always covered.
+  const deltaVCap = Number.isFinite(input.deltaVBudget ?? Infinity)
+    ? Math.max(45_000, (input.deltaVBudget ?? 0) * 0.35)
+    : Infinity;
   const desiredClosingSpeed = Math.min(
-    45_000,
+    deltaVCap,
     Math.sqrt(Math.max(0, terminalSpeed * terminalSpeed + 2 * controlledDecel * rangeToTerminal))
   );
   const brakingDistance = closingSpeed > 0 ? (closingSpeed * closingSpeed) / (2 * controlledDecel) : 0;
@@ -68,7 +76,7 @@ export function computeTransferGuidance(input: TransferGuidanceInput): ApproachG
     return {
       phase: "brake",
       targetHeading: headingOf(-input.relVx, -input.relVy, headingOf(outwardX, outwardY)),
-      throttlePercent: clamp(((closingSpeed - desiredClosingSpeed) / 3_000) * 100, 12, 75),
+      throttlePercent: clamp(((closingSpeed - desiredClosingSpeed) / 3_000) * 100, 12, 100),
       distance,
       closingSpeed,
       desiredClosingSpeed,
@@ -82,7 +90,7 @@ export function computeTransferGuidance(input: TransferGuidanceInput): ApproachG
     return {
       phase: "accelerate",
       targetHeading: headingOf(inwardX, inwardY),
-      throttlePercent: clamp((speedError / 4_000) * 100, 10, 65),
+      throttlePercent: clamp((speedError / 4_000) * 100, 10, 100),
       distance,
       closingSpeed,
       desiredClosingSpeed,

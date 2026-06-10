@@ -149,13 +149,20 @@ dockingClearanceRef.current = dockingClearance;
 const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: false, circMode: false, matchMode: false });
 
 useEffect(() => {
-  const interval = setInterval(() => {
+  const persist = () => {
     const current = stateRef.current;
     const synced = syncOwnedShips(current);
     saveCommanderProfile(synced, synced.profileId);
     setProfileSummaries(listCommanderProfiles());
-  }, 5000); // 5 seconds autosave interval
-  return () => clearInterval(interval);
+  };
+  // localStorage writes are synchronous and stall the frame loop, so autosave
+  // sparingly and flush on tab close instead of hammering every few seconds.
+  const interval = setInterval(persist, 30000);
+  window.addEventListener("beforeunload", persist);
+  return () => {
+    clearInterval(interval);
+    window.removeEventListener("beforeunload", persist);
+  };
 }, []);
 
 useEffect(() => {
@@ -227,7 +234,9 @@ useEffect(() => {
 
   const tick = async () => {
 const now = performance.now();
-const realDt = (now - lastTime) / 1000; // seconds
+// Clamp the frame delta: a GC pause, autosave write or background tab otherwise
+// multiplies into a huge game-time jump at high warp (1 s stall x 86400 = a day).
+const realDt = Math.min((now - lastTime) / 1000, 0.1);
 lastTime = now;
 
 // Ensure stable framerate ticks
@@ -453,6 +462,7 @@ targetMass,
 bodyRadius,
 terminalDistance,
 terminalSpeed: Math.max(25, activeSpecs.maxSpeed * 0.5),
+deltaVBudget: current.ship.engineIsp * 9.80665 * Math.log(shipMass / Math.max(1, current.ship.dryMass)),
 });
 setApproachGuidanceReadout(guidance);
 
@@ -526,8 +536,10 @@ const hullTurnRate = ((current.ship.yawDegPerSec ?? current.ship.pitchDegPerSec 
 if (dockingClearanceRef.current?.holdStartedAt != null && current.timeScale > 1) {
 // Docking control restricts time compression: the 10 s alignment hold must pass in real time.
 gameDt = realDt;
-} else if (Math.abs(throttleCommand) > 0.001 && current.timeScale > 60) {
-gameDt = realDt * 60;
+} else if (Math.abs(throttleCommand) > 0.001 && current.timeScale > 600) {
+// Burns warp-clamp to x600: high-delta-v transfer legs stay seconds of real time
+// while the integrator keeps enough substeps for a stable burn arc.
+gameDt = realDt * 600;
 }
 const headingStep = Math.min(MAX_HEADING_STEP_PER_FRAME, hullTurnRate * (0.7 + steeringEnginePips / 100) * gameDt);
 if (autopilotRef.current !== "none") {
