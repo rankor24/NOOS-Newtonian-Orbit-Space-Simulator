@@ -46,7 +46,7 @@ interface EliteCockpitHudProps {
   domGravityName: string;
   relativeOrbit: OrbitMetrics | null;
   approachGuidance: ApproachGuidance | null;
-  warpStatus: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | null };
+  warpStatus: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null };
   mapMode: MapMode;
   setMapMode: (mode: MapMode) => void;
   activePanel: React.ReactNode;
@@ -329,7 +329,10 @@ function EliteCockpitHudInner({
           <DataRow
             label="Warp Limit"
             value={`x${warpStatus.effective.toLocaleString()} — ${
-              warpStatus.reason === "burn" ? "ENGINE BURN" : warpStatus.reason === "dock-hold" ? "DOCKING HOLD" : "AP GUARD"
+              warpStatus.reason === "burn" ? "ENGINE BURN"
+                : warpStatus.reason === "dock-hold" ? "DOCKING HOLD"
+                : warpStatus.reason === "proximity" ? "PROXIMITY"
+                : "AP GUARD"
             }`}
             tone="tone-hot"
           />

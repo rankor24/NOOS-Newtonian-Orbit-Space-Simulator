@@ -117,7 +117,7 @@ const [isThrusting, setIsThrusting] = useState<boolean>(false);
 // Written every tick by the autopilot; the HUD reads it via the 10 Hz snapshot below.
 const approachGuidanceRef = useRef<ApproachGuidance | null>(null);
 // Effective warp actually applied this tick and why it was limited, for the HUD readout.
-const warpStatusRef = useRef<{ effective: number; reason: "dock-hold" | "burn" | "ap-guard" | null }>({ effective: 1, reason: null });
+const warpStatusRef = useRef<{ effective: number; reason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null }>({ effective: 1, reason: null });
 const [dockingClearance, setDockingClearance] = useState<{ bodyId: string; portId: string; holdStartedAt: number | null } | null>(null);
 const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 
@@ -156,7 +156,7 @@ const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: fal
 const [hudSnapshot, setHudSnapshot] = useState<{
   state: GameState;
   guidance: ApproachGuidance | null;
-  warp: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | null };
+  warp: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null };
 }>(() => ({ state: gameState, guidance: null, warp: { effective: 1, reason: null } }));
 useEffect(() => {
   const id = setInterval(() => {
@@ -586,7 +586,34 @@ approachGuidanceRef.current = null;
 let finalHeading = current.ship.heading;
 const steeringEnginePips = current.ship.powerDistribution?.engines ?? DEFAULT_POWER_DISTRIBUTION.engines;
 const hullTurnRate = ((current.ship.yawDegPerSec ?? current.ship.pitchDegPerSec ?? 16) * Math.PI) / 180;
-let warpLimitReason: "dock-hold" | "burn" | "ap-guard" | null = null;
+// Smart proximity warp-down for ANY closing approach, manual or autopilot:
+// keep at least ~REACTION_REAL_SECONDS of real time before surface contact at the
+// current closing rate, so the pilot can react and dock instead of colliding.
+const REACTION_REAL_SECONDS = 6;
+let proximityGuardSeconds: number | null = null;
+if (!current.isDocked) {
+const guardBodies: CelestialBody[] = [];
+const guardSelected = current.selectedBodyId ? systemBodiesRef.current.find((b) => b.id === current.selectedBodyId) : null;
+if (guardSelected) guardBodies.push(guardSelected);
+if (tickDomGravity.body && tickDomGravity.body.id !== guardSelected?.id) guardBodies.push(tickDomGravity.body);
+for (const guardBody of guardBodies) {
+const guardPos = posCache.get(guardBody.id) || getAbsoluteBodyPosition(guardBody.id, systemBodiesRef.current, current.gameTime);
+const guardVel = getBodyVelocity(guardBody.id, systemBodiesRef.current, current.gameTime);
+const offsetX = current.ship.x - guardPos.x;
+const offsetY = current.ship.y - guardPos.y;
+const relVelX = current.ship.vx - guardVel.vx;
+const relVelY = current.ship.vy - guardVel.vy;
+const guardDist = Math.max(1, Math.hypot(offsetX, offsetY));
+const closingSpeed = -(offsetX * relVelX + offsetY * relVelY) / guardDist;
+if (closingSpeed <= 10) continue; // not approaching, or drifting slowly
+const surfaceDistance = Math.max(0, guardDist - (guardBody.radius ?? 0));
+const timeToContact = surfaceDistance / closingSpeed;
+const guard = Math.max(realDt, (realDt * timeToContact) / REACTION_REAL_SECONDS);
+proximityGuardSeconds = proximityGuardSeconds === null ? guard : Math.min(proximityGuardSeconds, guard);
+}
+}
+
+let warpLimitReason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null = null;
 if (dockingClearanceRef.current?.holdStartedAt != null && current.timeScale > 1) {
 // Docking control restricts time compression: the 10 s alignment hold must pass in real time.
 gameDt = realDt;
@@ -601,6 +628,10 @@ if (autopilotTimeGuardSeconds !== null && gameDt > autopilotTimeGuardSeconds) {
 // Auto warp-down near the target: never step past ~5% of time-to-target per frame.
 gameDt = Math.max(realDt, autopilotTimeGuardSeconds);
 warpLimitReason = "ap-guard";
+}
+if (proximityGuardSeconds !== null && gameDt > proximityGuardSeconds) {
+gameDt = Math.max(realDt, proximityGuardSeconds);
+warpLimitReason = "proximity";
 }
 warpStatusRef.current = { effective: Math.max(1, Math.round(gameDt / realDt)), reason: warpLimitReason };
 const headingStep = Math.min(MAX_HEADING_STEP_PER_FRAME, hullTurnRate * (0.7 + steeringEnginePips / 100) * gameDt);

@@ -25,15 +25,10 @@ interface BrowserObservabilityApi {
   flush: () => void;
 }
 
+// import.meta.env typing now comes from vite/client (src/vite-env.d.ts).
 declare global {
   interface Window {
     __NEWTONIAN_OBS__?: BrowserObservabilityApi;
-  }
-
-  interface ImportMeta {
-    env: {
-      VITE_OBS_ENDPOINT?: string;
-    };
   }
 }
 

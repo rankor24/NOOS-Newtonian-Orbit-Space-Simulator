@@ -658,21 +658,21 @@ export function getDockingSpecs(body: CelestialBody | null): { maxDistance: numb
     const isTether = body.name.toLowerCase().includes("tether") || body.stationName?.toLowerCase().includes("tether");
     return {
       maxDistance: (body.radius ?? 0) + (isTether ? 250_000 : 50_000),
-      maxSpeed: 25,
+      maxSpeed: 50,
     };
   }
 
   if (body.type === "planet") {
     return {
       maxDistance: body.radius + 200_000,
-      maxSpeed: 50,
+      maxSpeed: 100,
     };
   }
 
   // Moons or smaller asteroid bodies containing stations
   return {
     maxDistance: body.radius + 200_000,
-    maxSpeed: 50,
+    maxSpeed: 100,
   };
 }
 

@@ -6,6 +6,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
 import { CelestialBody, ShipState, SystemFeature } from "../types";
+import shipSpriteUrl from "../assets/ship.svg";
 import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, getCachedPosition, BodyPosCache } from "../utils/physics";
 import { observeFrame } from "../utils/observability";
 
@@ -51,6 +52,12 @@ const DEFAULT_ZOOM_EXPONENT = -9;
 const SUN_RADIUS_METERS = 6.96e8;
 
 const GRID_STEPS_AU = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 250, 500, 1000, 2500];
+
+// Player ship sprite, loaded once per module. Nose points up in the artwork,
+// canvas heading 0 points +x, hence the +PI/2 rotation offset when drawing.
+const shipSprite = new Image();
+shipSprite.src = shipSpriteUrl;
+const SHIP_SPRITE_ASPECT = 450 / 520; // viewBox height/width of the trimmed artwork
 
 function getParentMassForSoi(body: CelestialBody, bodies: CelestialBody[]): number {
   if (!body.parentId) return 1.989e30;
@@ -793,35 +800,62 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const drawShip = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
     const pt = toScreen({ x: ship.x, y: ship.y }, center, width, height);
 
+    // LOD: detailed wireframe sprite once zoomed past system scale, growing with
+    // zoom (32..120 px); simple triangle marker at wide zoom or until the sprite loads.
+    const spriteSize = clamp(scale * 5e7, 32, 120);
+    const useSprite = scale >= 6.4e-7 && shipSprite.complete && shipSprite.naturalWidth > 0;
+
     ctx.save();
     ctx.translate(pt.x, pt.y);
-    ctx.rotate(ship.heading);
-    ctx.fillStyle = palette.ship;
-    ctx.strokeStyle = "#f8fafc";
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(12, 0);
-    ctx.lineTo(-8, -6);
-    ctx.lineTo(-4, 0);
-    ctx.lineTo(-8, 6);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
 
-    if (isThrusting && ship.fuelLevel > 0) {
-      ctx.fillStyle = "rgba(249,115,22,0.8)";
+    if (useSprite) {
+      const spriteW = spriteSize;
+      const spriteH = spriteSize * SHIP_SPRITE_ASPECT;
+      // Artwork nose points up (-y); rotate so it tracks the +x heading convention.
+      ctx.rotate(ship.heading + Math.PI / 2);
+      if (isThrusting && ship.fuelLevel > 0) {
+        const flame = ctx.createLinearGradient(0, spriteH * 0.4, 0, spriteH * 0.4 + spriteH * 0.7);
+        flame.addColorStop(0, "rgba(255,170,0,0.85)");
+        flame.addColorStop(1, "rgba(255,0,0,0)");
+        ctx.fillStyle = flame;
+        ctx.beginPath();
+        ctx.moveTo(-spriteW * 0.18, spriteH * 0.4);
+        ctx.lineTo(0, spriteH * 0.4 + spriteH * 0.7);
+        ctx.lineTo(spriteW * 0.18, spriteH * 0.4);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.drawImage(shipSprite, -spriteW / 2, -spriteH / 2, spriteW, spriteH);
+    } else {
+      ctx.rotate(ship.heading);
+      ctx.fillStyle = palette.ship;
+      ctx.strokeStyle = "#f8fafc";
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.moveTo(-8, -3);
-      ctx.lineTo(-24, 0);
-      ctx.lineTo(-8, 3);
+      ctx.moveTo(12, 0);
+      ctx.lineTo(-8, -6);
+      ctx.lineTo(-4, 0);
+      ctx.lineTo(-8, 6);
       ctx.closePath();
       ctx.fill();
+      ctx.stroke();
+
+      if (isThrusting && ship.fuelLevel > 0) {
+        ctx.fillStyle = "rgba(249,115,22,0.8)";
+        ctx.beginPath();
+        ctx.moveTo(-8, -3);
+        ctx.lineTo(-24, 0);
+        ctx.lineTo(-8, 3);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     ctx.restore();
 
     ctx.fillStyle = palette.ship;
     ctx.font = "bold 10px ui-monospace, SFMono-Regular, Consolas, monospace";
-    ctx.fillText("SHIP", pt.x + 12, pt.y - 10);
+    const labelOffset = useSprite ? spriteSize / 2 + 4 : 12;
+    ctx.fillText("SHIP", pt.x + labelOffset, pt.y - 10);
   };
 
   const drawFlightVectors = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
