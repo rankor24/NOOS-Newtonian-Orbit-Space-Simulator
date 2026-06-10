@@ -11,7 +11,7 @@ import { MainMenu } from "./components/MainMenu";
 import { createInitialState, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION } from "./data/ships";
 import { GameState, CelestialBody, SpaceContract } from "./types";
-import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, propagateKeplerianCoast } from "./utils/physics";
+import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, getSphereOfInfluence, propagateKeplerianCoast } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
@@ -122,6 +122,14 @@ const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 const [uiTheme, setUiTheme] = useState<"amber" | "blue" | "green" | "red">(() => {
 return (localStorage.getItem("newtonian_theme") as any) || "amber";
 });
+
+// Settings: fuel simulation toggle (off = free testing flights, tanks never drain)
+const [fuelSimEnabled, setFuelSimEnabled] = useState<boolean>(() => localStorage.getItem("newtonian_fuel_sim") !== "off");
+const fuelSimRef = useRef(fuelSimEnabled);
+useEffect(() => {
+  fuelSimRef.current = fuelSimEnabled;
+  localStorage.setItem("newtonian_fuel_sim", fuelSimEnabled ? "on" : "off");
+}, [fuelSimEnabled]);
 
 // Custom Autopilot Toggles
 const [autopilotMode, setAutopilotMode] = useState<"none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target">("none");
@@ -580,7 +588,10 @@ updatedShip.battery = netBattery;
 // No posCache here — sub-stepping advances sim time, cache would be frozen at t=gameTime
 );
 
-if (updatedShip.fuelLevel <= 0.1 && updatedShip.throttlePercent !== 0) {
+if (!fuelSimRef.current) {
+// Fuel sim disabled in settings: physics still applies thrust, tanks never drain.
+updatedShip.fuelLevel = updatedShip.maxFuel;
+} else if (updatedShip.fuelLevel <= 0.1 && updatedShip.throttlePercent !== 0) {
 updatedShip.throttlePercent = 0;
 }
 
@@ -1280,11 +1291,20 @@ const activePanel = (
     );
   }
 
+const selectedBodyParent = selectedBody?.parentId ? systemBodies.find((body) => body.id === selectedBody.parentId) : null;
+const targetSoi = selectedBody && selectedBody.parentId
+? getSphereOfInfluence(
+selectedBody,
+!selectedBodyParent || selectedBodyParent.type === "star" ? activeStar.mass * 1.989e30 : selectedBodyParent.mass ?? activeStar.mass * 1.989e30
+)
+: null;
+
 return (
 <EliteCockpitHud
 gameState={gameState}
 activeStar={activeStar}
 selectedBody={selectedBody}
+targetSoi={targetSoi}
 canDock={canDockAtSelectedBody}
 dockingDistance={dockingDistance}
 dockingRelativeSpeed={dockingRelativeSpeed}
@@ -1301,6 +1321,8 @@ activeTab={activeTab}
 setActiveTab={setActiveTab}
 uiTheme={uiTheme}
 setUiTheme={setUiTheme}
+fuelSimEnabled={fuelSimEnabled}
+onToggleFuelSim={() => setFuelSimEnabled((prev) => !prev)}
 autopilotMode={autopilotMode}
 setAutopilotMode={setAutopilotMode}
 setThrottlePercent={setThrottlePercent}

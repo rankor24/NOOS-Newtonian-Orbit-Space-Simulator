@@ -37,6 +37,7 @@ interface EliteCockpitHudProps {
   gameState: GameState;
   activeStar: StarData;
   selectedBody: CelestialBody | null;
+  targetSoi: number | null;
   canDock: boolean;
   dockingDistance: number;
   dockingRelativeSpeed: number;
@@ -53,6 +54,8 @@ interface EliteCockpitHudProps {
   setActiveTab: (tab: CockpitTab) => void;
   uiTheme: UiTheme;
   setUiTheme: (theme: UiTheme) => void;
+  fuelSimEnabled: boolean;
+  onToggleFuelSim: () => void;
   autopilotMode: AutopilotMode;
   setAutopilotMode: (mode: AutopilotMode) => void;
   setThrottlePercent: (value: number) => void;
@@ -197,6 +200,7 @@ export function EliteCockpitHud({
   gameState,
   activeStar,
   selectedBody,
+  targetSoi,
   canDock,
   dockingDistance,
   dockingRelativeSpeed,
@@ -213,6 +217,8 @@ export function EliteCockpitHud({
   setActiveTab,
   uiTheme,
   setUiTheme,
+  fuelSimEnabled,
+  onToggleFuelSim,
   autopilotMode,
   setAutopilotMode,
   setThrottlePercent,
@@ -329,6 +335,16 @@ export function EliteCockpitHud({
             </button>
           ))}
         </div>
+        <div className="elite-button-strip">
+          <button
+            className={fuelSimEnabled ? "is-active" : ""}
+            onClick={onToggleFuelSim}
+            title="Settings: when off, thrusters work but tanks never drain (testing mode)"
+          >
+            <Settings size={13} />
+            FUEL SIM {fuelSimEnabled ? "ON" : "OFF"}
+          </button>
+        </div>
         {onExitToMainMenu && (
           <button
             type="button"
@@ -371,6 +387,24 @@ export function EliteCockpitHud({
             <DataRow label="Class" value={selectedBody.type.toUpperCase()} />
             <DataRow label="Market" value={selectedBody.hasMarket ? getDisplayPortName(selectedBody) : "NONE"} />
             {selectedBody.hasMarket && <DataRow label="Faction" value={getDisplayPortFaction(selectedBody)} />}
+            {selectedBody.type !== "station" && (() => {
+              const bodyMassKg = selectedBody.type === "star" ? (selectedBody.mass ?? 0) * 1.989e30 : selectedBody.mass ?? 0;
+              const bodyRadius = selectedBody.radius ?? 0;
+              if (bodyMassKg <= 0 || bodyRadius <= 0) return null;
+              const G = 6.6743e-11;
+              const surfaceGravity = (G * bodyMassKg) / (bodyRadius * bodyRadius);
+              const escapeVelocity = Math.sqrt((2 * G * bodyMassKg) / bodyRadius);
+              return (
+                <>
+                  <DataRow label="Radius" value={`${Math.round(bodyRadius / 1000).toLocaleString()} km`} />
+                  <DataRow label="Surface g" value={`${surfaceGravity.toFixed(2)} m/s2`} />
+                  <DataRow label="Esc Vel" value={`${Math.round(escapeVelocity).toLocaleString()} m/s`} />
+                  {targetSoi !== null && targetSoi > 0 && Number.isFinite(targetSoi) && (
+                    <DataRow label="SOI" value={formatOrbitDistance(targetSoi)} />
+                  )}
+                </>
+              );
+            })()}
             {relativeOrbit && (
               <>
                 <DataRow label="Altitude" value={`${Math.round(relativeOrbit.altitude / 1000).toLocaleString()} km`} />

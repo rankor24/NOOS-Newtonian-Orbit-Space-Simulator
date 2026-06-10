@@ -127,16 +127,43 @@ export function getRelativeKeplerianPosition(body: CelestialBody, time: number):
  */
 export type BodyPosCache = Map<string, { x: number; y: number }>;
 
+// The parent/child structure of a body list never changes at runtime, only positions do.
+// Memoize the depth-sorted order per body-array identity so cache builds are O(n) Kepler
+// solves instead of O(n^2) array scans (this runs per substep in route prediction).
+interface BodyStructure {
+  ordered: CelestialBody[];
+  byId: Map<string, CelestialBody>;
+  depthById: Map<string, number>;
+}
+
+const bodyStructureCache = new WeakMap<CelestialBody[], BodyStructure>();
+
+function getBodyStructure(bodies: CelestialBody[]): BodyStructure {
+  let structure = bodyStructureCache.get(bodies);
+  if (!structure) {
+    const byId = new Map(bodies.map((body) => [body.id, body]));
+    const depthById = new Map<string, number>();
+    const depth = (b: CelestialBody): number => {
+      let d = 0;
+      let cur: CelestialBody | undefined = b;
+      while (cur?.parentId) { d++; cur = byId.get(cur.parentId); }
+      return d;
+    };
+    for (const body of bodies) depthById.set(body.id, depth(body));
+    const ordered = [...bodies].sort((a, b) => (depthById.get(a.id) ?? 0) - (depthById.get(b.id) ?? 0));
+    structure = { ordered, byId, depthById };
+    bodyStructureCache.set(bodies, structure);
+  }
+  return structure;
+}
+
+function getDepthOrderedBodies(bodies: CelestialBody[]): CelestialBody[] {
+  return getBodyStructure(bodies).ordered;
+}
+
 export function buildBodyPositionCache(bodies: CelestialBody[], time: number): BodyPosCache {
   const cache: BodyPosCache = new Map();
-  // Depth-sort: star (no parent) first, then planets (parent=star), then moons, etc.
-  const depth = (b: CelestialBody): number => {
-    let d = 0;
-    let cur: CelestialBody | undefined = b;
-    while (cur?.parentId) { d++; cur = bodies.find((p) => p.id === cur!.parentId); }
-    return d;
-  };
-  const sorted = [...bodies].sort((a, b) => depth(a) - depth(b));
+  const sorted = getDepthOrderedBodies(bodies);
   for (const body of sorted) {
     if (!body.parentId) {
       cache.set(body.id, { x: 0, y: 0 });
@@ -245,17 +272,19 @@ export function getDominantGravitySource(
   let dominantDist = star ? Math.hypot(shipX, shipY) : Infinity;
   let activeSOI = Infinity;
   let dominantDepth = star ? 0 : -1;
+  const structure = getBodyStructure(bodies);
 
   for (const body of bodies) {
     if (body.type === "star") continue;
 
     const absPos = posCache ? getCachedPosition(posCache, body.id) : getAbsoluteBodyPosition(body.id, bodies, time);
     const dist = Math.hypot(shipX - absPos.x, shipY - absPos.y);
-    const parentMass = getParentMass(body, bodies, starMass);
+    const parent = body.parentId ? structure.byId.get(body.parentId) : undefined;
+    const parentMass = !parent || parent.type === "star" ? starMass : parent.mass ?? starMass;
     const soi = getSphereOfInfluence(body, parentMass);
     if (soi <= 0 || dist >= soi) continue;
 
-    const depth = getBodyDepth(body, bodies);
+    const depth = structure.depthById.get(body.id) ?? getBodyDepth(body, bodies);
     const isBetterNestedMatch = depth > dominantDepth;
     const isSameDepthCloser = depth === dominantDepth && dist / soi < dominantDist / activeSOI;
 
@@ -288,10 +317,9 @@ export function integrateSpacecraft(
   const thrustScale = Math.abs(clampedThrottle) / 100;
   const thrustDirection = clampedThrottle >= 0 ? 1 : -1;
 
-  const referenceBody = getDominantGravitySource(x, y, bodies, timeStart, starMass, posCache).body;
-  const referencePos = referenceBody
-    ? (posCache ? getCachedPosition(posCache, referenceBody.id) : getAbsoluteBodyPosition(referenceBody.id, bodies, timeStart))
-    : { x: 0, y: 0 };
+  const startCache = posCache ?? buildBodyPositionCache(bodies, timeStart);
+  const referenceBody = getDominantGravitySource(x, y, bodies, timeStart, starMass, startCache).body;
+  const referencePos = referenceBody ? getCachedPosition(startCache, referenceBody.id) : { x: 0, y: 0 };
   const referenceMu = referenceBody
     ? G * (referenceBody.type === "star" ? starMass : referenceBody.mass ?? 0)
     : 0;
@@ -307,8 +335,11 @@ export function integrateSpacecraft(
   for (let s = 0; s < substeps; s++) {
     const currentSimTime = timeStart + s * subDt;
 
-    // 1. Calculate active gravity acceleration from star + all real bodies
-    let { accX, accY } = getSummedGravityAcceleration(x, y, bodies, currentSimTime, starMass, posCache);
+    // 1. Calculate active gravity acceleration from star + all real bodies.
+    // Without a caller cache, build one for this substep's exact time: a single O(n)
+    // Kepler pass beats resolving every body's parent chain recursively per lookup.
+    const stepCache = posCache ?? buildBodyPositionCache(bodies, currentSimTime);
+    let { accX, accY } = getSummedGravityAcceleration(x, y, bodies, currentSimTime, starMass, stepCache);
 
     // Add continuous thrust if operating thrusters
     const totalMass = dryMass + fuelLevel;

@@ -133,6 +133,11 @@ export const migrateLoadedState = (parsed: any): GameState => {
     maxCruiseSpeed: Math.max(parsedState?.ship?.maxCruiseSpeed ?? 0, fallback.ship.maxCruiseSpeed),
     maxBoostSpeed: Math.max(parsedState?.ship?.maxBoostSpeed ?? 0, fallback.ship.maxBoostSpeed),
     engineThrust: Math.max(parsedState?.ship?.engineThrust ?? 0, fallback.ship.engineThrust),
+    // Isp rebalance migration: saves from before the game-scale Isp change (values like
+    // 3600/4500/9500) get the same 100x bump applied to the catalog values.
+    engineIsp: (parsedState?.ship?.engineIsp ?? 0) >= 100000
+      ? parsedState.ship.engineIsp
+      : Math.max((parsedState?.ship?.engineIsp ?? 0) * 100, fallback.ship.engineIsp),
     fuelLevel: (parsedState?.ship?.fuelLevel ?? 0) > 0 ? parsedState.ship.fuelLevel : fallback.ship.fuelLevel,
     battery: (parsedState?.ship?.battery ?? 0) > 0 ? parsedState.ship.battery : fallback.ship.battery,
     powerDistribution: normalizePowerDistribution(parsedState?.ship?.powerDistribution),

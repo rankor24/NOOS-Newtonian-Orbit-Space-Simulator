@@ -356,7 +356,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const [hoveredBodyId, setHoveredBodyId] = useState<string | null>(null);
   const dragMovedRef = useRef(false);
   const drawCacheRef = useRef<BodyPosCache>(new Map());
-  const routeFrameCounter = useRef(0);
+  const lastRouteComputeAtRef = useRef(0);
   const lastRouteRef = useRef<RoutePrognosis>({
     points: [],
     duration: 0,
@@ -632,7 +632,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     const moonTooSmall = body.type === "moon" && orbitRadiusPx < 8 && !selected;
     const designationOrbitTooSmall = body.type === "moon" && isDesignationMoonName(body.name) && orbitRadiusPx < 32 && !selected;
     const asteroidTooSmall = body.type === "asteroid" && orbitRadiusPx < 5 && !selected;
-    if (moonTooSmall || designationOrbitTooSmall || asteroidTooSmall) return;
+    const stationTooSmall = body.type === "station" && orbitRadiusPx < 36 && !selected;
+    if (moonTooSmall || designationOrbitTooSmall || asteroidTooSmall || stationTooSmall) return;
 
     const isStation = body.type === "station";
     ctx.strokeStyle = selected ? palette.accent : isStation ? "rgba(167,139,250,0.32)" : "rgba(148,163,184,0.20)";
@@ -685,6 +686,13 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     }
 
     if (body.type === "station") {
+      // Stations sit a few hundred km from their parent: at system zoom they all
+      // collapse onto the parent body, so cull them harder than any moon.
+      if (!selected && !hovered && body.parentId) {
+        const parentPt = toScreen(getBodyPos(body.parentId), center, width, height);
+        const parentSeparation = Math.hypot(pt.x - parentPt.x, pt.y - parentPt.y);
+        if (parentSeparation < 36) return;
+      }
       drawStationMapGlyph(ctx, pt, radius, selected, hovered, palette.accent);
 
       if (selected || hovered || scale > 8e-10) {
@@ -936,8 +944,11 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   };
 
   const drawRoute = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
-    routeFrameCounter.current++;
-    if (routeFrameCounter.current % 10 === 0 || lastRouteRef.current.points.length === 0) {
+    // Route prediction is the most expensive draw step; refresh on a wall-clock
+    // budget so high frame rates and high warp don't multiply the cost.
+    const nowMs = performance.now();
+    if (nowMs - lastRouteComputeAtRef.current >= 600 || lastRouteRef.current.points.length === 0) {
+      lastRouteComputeAtRef.current = nowMs;
       const selectedTarget = selectedBodyId ? bodies.find((body) => body.id === selectedBodyId) : null;
       const targetDistance = selectedTarget
         ? Math.hypot(ship.x - getBodyPos(selectedTarget.id).x, ship.y - getBodyPos(selectedTarget.id).y)
@@ -1023,8 +1034,9 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       }
     }
 
+    // Left-edge middle band: clear of the COMMS panel (top) and TARGET panel (bottom).
     const readoutX = 14;
-    const readoutY = selectedBody ? 62 : 48;
+    const readoutY = Math.round(height * 0.42) + 60;
     const refName = referenceBody?.name ?? "NONE";
     ctx.fillStyle = "rgba(2,6,23,0.74)";
     ctx.strokeStyle = "rgba(148,163,184,0.28)";
@@ -1120,13 +1132,15 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     drawFlightVectors(ctx, center, width, height);
     drawShip(ctx, center, width, height);
 
+    // Keep status text in the left-edge middle band, clear of the corner HUD panels.
+    const statusTextY = Math.round(height * 0.42);
     ctx.fillStyle = "rgba(226,232,240,0.72)";
     ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
-    ctx.fillText(`ZOOM 10^${zoomExponent.toFixed(2)} px/m`, 14, 18);
-    ctx.fillText(`CENTER ${cameraMode.toUpperCase()}`, 14, 32);
+    ctx.fillText(`ZOOM 10^${zoomExponent.toFixed(2)} px/m`, 14, statusTextY);
+    ctx.fillText(`CENTER ${cameraMode.toUpperCase()}`, 14, statusTextY + 14);
     if (selectedBody) {
       const pos = getBodyPos(selectedBody.id);
-      ctx.fillText(`TARGET ${selectedBody.name} ${formatDistanceMeters(Math.hypot(ship.x - pos.x, ship.y - pos.y))}`, 14, 46);
+      ctx.fillText(`TARGET ${selectedBody.name} ${formatDistanceMeters(Math.hypot(ship.x - pos.x, ship.y - pos.y))}`, 14, statusTextY + 28);
     }
 
     observeFrame();

@@ -49,20 +49,20 @@ export const UPGRADES: ShipUpgrade[] = [
   {
     id: "engine_i",
     name: "Kestrel High-Flow Plasma Thruster",
-    description: "Advanced magnetoplasmadynamic engine. Increases continuous thrust to 3,500,000 N and boosts efficiency (Isp = 4,500s).",
+    description: "Advanced magnetoplasmadynamic engine. Increases continuous thrust to 3,500,000 N and boosts efficiency (Isp = 450,000s).",
     cost: 8500,
     unlocked: false,
     category: "engine",
-    modifier: (ship) => ({ ...ship, engineThrust: Math.max(ship.engineThrust, 3500000), engineIsp: 4500 }),
+    modifier: (ship) => ({ ...ship, engineThrust: Math.max(ship.engineThrust, 3500000), engineIsp: 450000 }),
   },
   {
     id: "engine_ii",
     name: "Helios Fusion Drive Core",
-    description: "A catalytic magnetic-confinement fusion torch. Generates 6,500,000 N thrust with astronomical efficiency (Isp = 9,500s).",
+    description: "A catalytic magnetic-confinement fusion torch. Generates 6,500,000 N thrust with astronomical efficiency (Isp = 950,000s).",
     cost: 32000,
     unlocked: false,
     category: "engine",
-    modifier: (ship) => ({ ...ship, engineThrust: Math.max(ship.engineThrust, 6500000), engineIsp: 9500 }),
+    modifier: (ship) => ({ ...ship, engineThrust: Math.max(ship.engineThrust, 6500000), engineIsp: 950000 }),
   },
   {
     id: "cargo_i",
@@ -311,7 +311,9 @@ export function createStarterShip(): ShipState {
     fuelLevel: 4000,
     maxFuel: 4000,
     engineThrust: 2500000,
-    engineIsp: 3600,
+    // Game-scale Isp (100x chemical): keeps Tsiolkovsky honest while giving a delta-v
+    // budget (~400 km/s) that matches the interplanetary transfer speeds the game uses.
+    engineIsp: 360000,
     cargoCapacity: 4,
     cargoCapacityTons: 4,
     passengerCapacity: 0,
