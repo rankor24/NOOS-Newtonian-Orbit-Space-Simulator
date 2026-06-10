@@ -119,26 +119,40 @@ function StatusLamp({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-function PowerSlider({
+// Power distribution is a shared 100% budget split across three channels; we present it
+// Elite-style as 6 pips (max 4 per channel), so 1 pip = 1/6 of reactor output.
+const PIP_TOTAL = 6;
+const PIP_MAX = 4;
+
+function pipsFromPercent(value: number) {
+  return Math.max(0, Math.min(PIP_MAX, Math.round((value * PIP_TOTAL) / 100)));
+}
+
+function PowerPips({
   label,
   value,
   icon: Icon,
-  onChange,
+  onAdd,
 }: {
   label: string;
   value: number;
   icon: React.ElementType;
-  onChange: (value: number) => void;
+  onAdd: () => void;
 }) {
+  const pips = pipsFromPercent(value);
   return (
-    <label className="elite-power-slider">
-      <span>
-        <Icon size={14} />
+    <button type="button" className="elite-pip-column" onClick={onAdd} title={`Route power to ${label} (+1 pip)`}>
+      <span className="elite-pip-cells">
+        {Array.from({ length: PIP_MAX }, (_, i) => (
+          <i key={i} className={`elite-pip-cell ${i < pips ? "is-lit" : ""}`} />
+        ))}
+      </span>
+      <span className="elite-pip-label">
+        <Icon size={12} />
         {label}
       </span>
-      <input type="range" min="0" max="100" value={value} onChange={(event) => onChange(Number(event.target.value))} />
       <strong>{value}%</strong>
-    </label>
+    </button>
   );
 }
 
@@ -226,6 +240,20 @@ export function EliteCockpitHud({
   const throttleTone = throttle > 0 ? "tone-hot" : throttle < 0 ? "tone-cyan" : "";
   const headingDeg = Math.round((((gameState.ship.heading * 180) / Math.PI) % 360 + 360) % 360);
   const shieldPercent = Math.round((gameState.ship.baseShieldStrength * (0.55 + powerDistribution.shields / 100)) / SIDEWINDER_STARTER_PROFILE.baseShieldStrength * 100);
+  const fuelFraction = gameState.ship.maxFuel > 0 ? Math.max(0, Math.min(1, gameState.ship.fuelLevel / gameState.ship.maxFuel)) : 0;
+  const fuelSegments = Math.ceil(fuelFraction * 12);
+  const batteryFraction = gameState.ship.maxBattery > 0 ? Math.max(0, Math.min(1, gameState.ship.battery / gameState.ship.maxBattery)) : 0;
+  const batterySegments = Math.ceil(batteryFraction * 12);
+  const bumpPower = (channel: "shields" | "engines" | "weapons") => {
+    const pips = pipsFromPercent(powerDistribution[channel]);
+    if (pips >= PIP_MAX) return;
+    setPowerDistribution(channel, Math.round(((pips + 1) / PIP_TOTAL) * 100));
+  };
+  const resetPower = () => {
+    // The setter rebalances the other two channels proportionally, so two calls settle all three.
+    setPowerDistribution("shields", DEFAULT_POWER_DISTRIBUTION.shields);
+    setPowerDistribution("engines", DEFAULT_POWER_DISTRIBUTION.engines);
+  };
   const togglePanel = (panel: string) => {
     setCollapsedPanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
   };
@@ -247,6 +275,7 @@ export function EliteCockpitHud({
     <div className={`elite-root elite-theme-${uiTheme}`}>
       <div className="elite-map-layer">{mapView}</div>
       <div className="elite-vignette" />
+      <div className="elite-scanline" />
 
       <HudPanel
         id="elite-comms-panel"
@@ -417,7 +446,15 @@ export function EliteCockpitHud({
         <DataRow label="Hull" value={`${gameState.ship.baseArmour} armour`} />
         <DataRow label="Shield" value={`${shieldPercent}%`} />
         <DataRow label="Cargo" value={`${cargoUsed.toFixed(1)} / ${gameState.ship.cargoCapacity} t`} />
-        <DataRow label="Fuel" value={`${Math.round(gameState.ship.fuelLevel).toLocaleString()} / ${gameState.ship.maxFuel.toLocaleString()} kg`} />
+        <div className="elite-gauge-row" title={`${Math.round(gameState.ship.fuelLevel).toLocaleString()} / ${gameState.ship.maxFuel.toLocaleString()} kg`}>
+          <span>Fuel</span>
+          <span className="elite-seg-bar">
+            {Array.from({ length: 12 }, (_, i) => (
+              <i key={i} className={i < fuelSegments ? "is-lit" : ""} />
+            ))}
+          </span>
+          <strong className={fuelFraction < 0.2 ? "tone-hot" : ""}>{Math.round(gameState.ship.fuelLevel).toLocaleString()} kg</strong>
+        </div>
         <DataRow label="Mass" value={`${Math.round(shipMass).toLocaleString()} kg`} />
         <DataRow label="Delta-V" value={`${Math.round(deltaV).toLocaleString()} m/s`} tone="tone-cyan" />
         <DataRow label="Accel" value={`${thrustAcceleration.toFixed(2)} m/s2`} />
@@ -428,6 +465,7 @@ export function EliteCockpitHud({
           <StatusLamp label="FRAMESHIFT ONLINE" active={gameState.ship.warpCapacity} />
           <StatusLamp label="AUTOPILOT" active={autopilotMode !== "none"} />
           <StatusLamp label="MINING" active={gameState.miningTargetId !== null} />
+          <StatusLamp label="CLEARANCE" active={dockingClearance !== null} />
           <StatusLamp label="DOCKED" active={gameState.isDocked} />
         </div>
 
@@ -458,10 +496,13 @@ export function EliteCockpitHud({
 
           <div className="elite-power-stack">
             <div className="elite-power-grid">
-              <PowerSlider label="SYS" icon={Shield} value={powerDistribution.shields} onChange={(value) => setPowerDistribution("shields", value)} />
-              <PowerSlider label="ENG" icon={Zap} value={powerDistribution.engines} onChange={(value) => setPowerDistribution("engines", value)} />
-              <PowerSlider label="WEP" icon={Satellite} value={powerDistribution.weapons} onChange={(value) => setPowerDistribution("weapons", value)} />
+              <PowerPips label="SYS" icon={Shield} value={powerDistribution.shields} onAdd={() => bumpPower("shields")} />
+              <PowerPips label="ENG" icon={Zap} value={powerDistribution.engines} onAdd={() => bumpPower("engines")} />
+              <PowerPips label="WEP" icon={Satellite} value={powerDistribution.weapons} onAdd={() => bumpPower("weapons")} />
             </div>
+            <button type="button" className="elite-pip-reset" onClick={resetPower} title="Reset power distribution to 2/2/2 pips">
+              RST PIPS
+            </button>
             <span className="elite-vector-key">
               <i className="key-heading" /> heading
               <i className="key-velocity" /> velocity
@@ -631,8 +672,10 @@ export function EliteCockpitHud({
               <div className="elite-battery-row">
                 <BatteryCharging size={14} />
                 <span className="battery-label">CAPACITOR</span>
-                <div className="elite-battery-bar">
-                  <div className="elite-battery-fill" style={{ width: `${(gameState.ship.battery / gameState.ship.maxBattery) * 100}%` }} />
+                <div className="elite-seg-bar seg-cyan">
+                  {Array.from({ length: 12 }, (_, i) => (
+                    <i key={i} className={i < batterySegments ? "is-lit" : ""} />
+                  ))}
                 </div>
                 <strong className="battery-value">{gameState.ship.battery.toFixed(1)} / {gameState.ship.maxBattery.toFixed(1)} MJ</strong>
               </div>
