@@ -1355,6 +1355,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
             <button
               type="button"
               onClick={() => setMode("star")}
+              title="Center the map on the system primary"
               className={`flex items-center gap-1 rounded px-2 py-1 transition ${cameraMode === "star" ? "bg-amber-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
             >
               <Zap className="h-3.5 w-3.5" />
@@ -1363,6 +1364,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
             <button
               type="button"
               onClick={() => setMode("ship")}
+              title="Center the map on the player ship"
               className={`flex items-center gap-1 rounded px-2 py-1 transition ${cameraMode === "ship" ? "bg-sky-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
             >
               <Compass className="h-3.5 w-3.5" />
@@ -1372,6 +1374,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
               type="button"
               disabled={!selectedBodyId}
               onClick={() => setMode("target")}
+              title={selectedBodyId ? "Center the map on the selected target" : "Select a target to enable target view"}
               className={`flex items-center gap-1 rounded px-2 py-1 transition ${!selectedBodyId ? "cursor-not-allowed opacity-35" : cameraMode === "target" ? "bg-orange-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
             >
               <Crosshair className="h-3.5 w-3.5" />
@@ -1396,6 +1399,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
               max={MAX_ZOOM_EXPONENT}
               step="0.05"
               value={zoomExponent}
+              title="Adjust map zoom level"
               onChange={(event) => {
                 setZoomExponent(clampZoomExponent(Number(event.target.value)));
               }}

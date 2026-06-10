@@ -182,7 +182,14 @@ function HudPanel({
 }) {
   return (
     <section className={`elite-panel ${className} ${collapsed ? "is-collapsed" : ""}`} aria-label={title}>
-      <button className="elite-panel-title" type="button" onClick={onToggle} aria-expanded={!collapsed} aria-controls={id}>
+      <button
+        className="elite-panel-title"
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        aria-controls={id}
+        title={`${collapsed ? "Expand" : "Collapse"} ${title} panel`}
+      >
         <span>
           <Icon size={15} />
           {title}
@@ -320,7 +327,12 @@ function EliteCockpitHudInner({
         )}
         <div className="elite-button-strip">
           {[1, 60, 600, 3600, 21600, 86400].map((value) => (
-            <button key={value} className={gameState.timeScale === value ? "is-active" : ""} onClick={() => setTimeScale(value)}>
+            <button
+              key={value}
+              className={gameState.timeScale === value ? "is-active" : ""}
+              onClick={() => setTimeScale(value)}
+              title={`Set simulation time scale to ${value.toLocaleString()}x`}
+            >
               {value}x
             </button>
           ))}
@@ -339,7 +351,12 @@ function EliteCockpitHudInner({
         )}
         <div className="elite-button-strip">
           {themeTabs.map((theme) => (
-            <button key={theme.id} className={uiTheme === theme.id ? "is-active" : ""} onClick={() => setUiTheme(theme.id)}>
+            <button
+              key={theme.id}
+              className={uiTheme === theme.id ? "is-active" : ""}
+              onClick={() => setUiTheme(theme.id)}
+              title={`Switch cockpit palette to ${theme.id}`}
+            >
               {theme.label}
             </button>
           ))}
@@ -358,6 +375,7 @@ function EliteCockpitHudInner({
           <button
             type="button"
             onClick={onExitToMainMenu}
+            title="Exit the current flight session and return to the main menu"
             className="w-full mt-2.5 py-1.5 rounded bg-rose-950/20 hover:bg-rose-900/45 border border-rose-900/60 text-rose-300 font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
           >
             <Power className="w-3.5 h-3.5 text-rose-500 fill-current" />
@@ -374,7 +392,12 @@ function EliteCockpitHudInner({
         {mapTabs.map((tab) => {
           const Icon = tab.icon;
           return (
-            <button key={tab.id} className={mapMode === tab.id ? "is-active" : ""} onClick={() => setMapMode(tab.id)}>
+            <button
+              key={tab.id}
+              className={mapMode === tab.id ? "is-active" : ""}
+              onClick={() => setMapMode(tab.id)}
+              title={`Center navigation map on ${tab.label.toLowerCase()} reference`}
+            >
               <Icon size={15} />
               {tab.label}
             </button>
@@ -457,13 +480,17 @@ function EliteCockpitHudInner({
               );
             })()}
             <div className="elite-button-grid">
-              <button disabled={!canDock || gameState.isDocked} onClick={onDock}>
+              <button
+                disabled={!canDock || gameState.isDocked}
+                onClick={onDock}
+                title="Request docking when range, speed, and alignment conditions are satisfied"
+              >
                 DOCK
               </button>
-              <button disabled={!gameState.isDocked} onClick={onUndock}>
+              <button disabled={!gameState.isDocked} onClick={onUndock} title="Leave the current docking port and return to free flight">
                 UNDOCK
               </button>
-              <button onClick={onToggleMining}>
+              <button onClick={onToggleMining} title={gameState.miningTargetId === selectedBody.id ? "Stop mining the selected target" : "Start mining the selected target"}>
                 <Hammer size={13} />
                 {gameState.miningTargetId === selectedBody.id ? "STOP" : "MINE"}
               </button>
@@ -563,7 +590,9 @@ function EliteCockpitHudInner({
                 <strong className={throttleTone}>{throttle > 0 ? `+${throttle}` : throttle}%</strong>
               </div>
               <div className="elite-throttle-row">
-                <button type="button" onClick={() => setThrottlePercent(throttle - 10)}>-10</button>
+                <button type="button" onClick={() => setThrottlePercent(throttle - 10)} title="Reduce throttle by 10%">
+                  -10
+                </button>
                 <input
                   aria-label="Throttle percent"
                   type="range"
@@ -572,9 +601,12 @@ function EliteCockpitHudInner({
                   step="1"
                   value={throttle}
                   onChange={(event) => setThrottlePercent(Number(event.target.value))}
+                  title="Set main engine throttle from full reverse to full forward"
                 />
-                <button type="button" onClick={() => setThrottlePercent(throttle + 10)}>+10</button>
-                <button type="button" className="btn-zero" onClick={() => setThrottlePercent(0)}>
+                <button type="button" onClick={() => setThrottlePercent(throttle + 10)} title="Increase throttle by 10%">
+                  +10
+                </button>
+                <button type="button" className="btn-zero" onClick={() => setThrottlePercent(0)} title="Cut throttle to zero">
                   <Power size={14} />
                   ZERO
                 </button>
@@ -590,7 +622,9 @@ function EliteCockpitHudInner({
                 <strong className="tone-hot">{headingDeg}°</strong>
               </div>
               <div className="elite-heading-row">
-                <button type="button" onClick={() => onSetShipHeading(((headingDeg - 5 + 360) % 360) * Math.PI / 180)}>-5°</button>
+                <button type="button" onClick={() => onSetShipHeading(((headingDeg - 5 + 360) % 360) * Math.PI / 180)} title="Rotate heading 5 degrees counterclockwise">
+                  -5°
+                </button>
                 <input
                   aria-label="Ship heading degrees"
                   type="range"
@@ -599,8 +633,11 @@ function EliteCockpitHudInner({
                   step="1"
                   value={headingDeg}
                   onChange={(event) => onSetShipHeading((Number(event.target.value) * Math.PI) / 180)}
+                  title="Set absolute ship heading in degrees"
                 />
-                <button type="button" onClick={() => onSetShipHeading(((headingDeg + 5) % 360) * Math.PI / 180)}>+5°</button>
+                <button type="button" onClick={() => onSetShipHeading(((headingDeg + 5) % 360) * Math.PI / 180)} title="Rotate heading 5 degrees clockwise">
+                  +5°
+                </button>
                 <button
                   type="button"
                   className="btn-align"
@@ -613,6 +650,7 @@ function EliteCockpitHudInner({
                       onSetShipHeading(0);
                     }
                   }}
+                  title="Align heading to target bearing, or to velocity vector if no target is selected"
                 >
                   ALIGN
                 </button>
@@ -763,7 +801,7 @@ function EliteCockpitHudInner({
                 <Activity size={15} />
                 {managementTabs.find((tab) => tab.id === modalTab)?.label} PANEL
               </span>
-              <button type="button" onClick={() => setModalTab(null)}>
+              <button type="button" onClick={() => setModalTab(null)} title="Close this management screen">
                 CLOSE
               </button>
             </div>
