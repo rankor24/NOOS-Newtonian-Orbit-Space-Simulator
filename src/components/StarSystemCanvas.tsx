@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
 import { CelestialBody, ShipState, SystemFeature } from "../types";
 import { getAbsoluteBodyPosition, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, getCachedPosition, BodyPosCache } from "../utils/physics";
+import { observeFrame } from "../utils/observability";
 
 interface CanvasProps {
   bodies: CelestialBody[];
@@ -27,6 +28,17 @@ type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "
 
 type CameraMode = "ship" | "target" | "star" | "fit";
 type Point = { x: number; y: number };
+type RoutePoint = Point & { t: number };
+type RoutePrognosis = {
+  points: RoutePoint[];
+  duration: number;
+  referenceBodyId: string | null;
+  referenceClosestIndex: number;
+  referenceClosestAltitude: number;
+  selectedClosestIndex: number | null;
+  selectedClosestDistance: number | null;
+  impactIndex: number | null;
+};
 
 const AU = 1.496e11;
 const MIN_ZOOM_EXPONENT = -14;
@@ -135,6 +147,67 @@ function formatDistanceMeters(value: number) {
   return `${Math.round(value / 1000).toLocaleString()} km`;
 }
 
+function formatDuration(seconds: number) {
+  const abs = Math.max(0, seconds);
+  if (abs >= 86400) return `${(abs / 86400).toFixed(1)} d`;
+  if (abs >= 3600) return `${(abs / 3600).toFixed(1)} h`;
+  if (abs >= 60) return `${Math.round(abs / 60)} m`;
+  return `${Math.round(abs)} s`;
+}
+
+function colorWithAlpha(hex: string, alpha: number) {
+  const normalized = hex.replace("#", "");
+  const value = Number.parseInt(normalized, 16);
+  if (Number.isNaN(value) || normalized.length !== 6) return `rgba(56,189,248,${alpha})`;
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function drawVectorLine(
+  ctx: CanvasRenderingContext2D,
+  origin: Point,
+  directionX: number,
+  directionY: number,
+  length: number,
+  color: string,
+  label: string,
+  dashed = false
+) {
+  const directionLength = Math.hypot(directionX, directionY);
+  if (directionLength < 1e-6) return;
+
+  const ux = directionX / directionLength;
+  const uy = directionY / directionLength;
+  const endX = origin.x + ux * length;
+  const endY = origin.y + uy * length;
+  const headSize = 7;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash(dashed ? [5, 5] : []);
+  ctx.beginPath();
+  ctx.moveTo(origin.x, origin.y);
+  ctx.lineTo(endX, endY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const angle = Math.atan2(uy, ux);
+  ctx.beginPath();
+  ctx.moveTo(endX, endY);
+  ctx.lineTo(endX - Math.cos(angle - 0.45) * headSize, endY - Math.sin(angle - 0.45) * headSize);
+  ctx.lineTo(endX - Math.cos(angle + 0.45) * headSize, endY - Math.sin(angle + 0.45) * headSize);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.font = "bold 10px ui-monospace, SFMono-Regular, Consolas, monospace";
+  ctx.fillText(label, endX + 8, endY + 4);
+  ctx.restore();
+}
+
 /** LOD body sizing: always proportional to real radius × zoom.
  *  Floor based on log(radius) so bigger bodies get slightly bigger
  *  minimum dots — hierarchy visible at any zoom. Real proportions
@@ -186,7 +259,16 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const dragMovedRef = useRef(false);
   const drawCacheRef = useRef<BodyPosCache>(new Map());
   const routeFrameCounter = useRef(0);
-  const lastRouteRef = useRef<{ x: number; y: number }[]>([]);
+  const lastRouteRef = useRef<RoutePrognosis>({
+    points: [],
+    duration: 0,
+    referenceBodyId: null,
+    referenceClosestIndex: 0,
+    referenceClosestAltitude: Infinity,
+    selectedClosestIndex: null,
+    selectedClosestDistance: null,
+    impactIndex: null,
+  });
 
   const lastRenderedCenterRef = useRef<Point>({ x: 0, y: 0 });
   const lastRenderedScaleRef = useRef<number>(Math.pow(10, DEFAULT_ZOOM_EXPONENT));
@@ -585,101 +667,226 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     }
     ctx.restore();
 
-    const velocityScale = 240 * scale;
-    ctx.strokeStyle = "rgba(56,189,248,0.55)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(pt.x, pt.y);
-    ctx.lineTo(pt.x + ship.vx * velocityScale, pt.y + ship.vy * velocityScale);
-    ctx.stroke();
-
     ctx.fillStyle = palette.ship;
     ctx.font = "bold 10px ui-monospace, SFMono-Regular, Consolas, monospace";
     ctx.fillText("SHIP", pt.x + 12, pt.y - 10);
   };
 
-  const drawRoute = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
-    // Throttle: only recompute route every 10 frames for performance
-    routeFrameCounter.current++;
-    if (routeFrameCounter.current % 10 === 0 || lastRouteRef.current.length === 0) {
-      // Compute effective throttle and heading for route prediction based on autopilot mode.
-      // The route trace should reflect where the autopilot is actually steering, not just coasting.
-      let routeThrottle = 0;
-      let routeHeading = ship.heading;
+  const drawFlightVectors = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
+    const shipPt = toScreen({ x: ship.x, y: ship.y }, center, width, height);
+    const vectorLength = 78;
+    drawVectorLine(ctx, shipPt, ship.vx, ship.vy, vectorLength, "rgba(56,189,248,0.92)", "VEL", false);
 
-      if (autopilotMode === "approach-target" && selectedBodyId) {
-        const targetBody = bodies.find((b) => b.id === selectedBodyId);
-        if (targetBody) {
-          const targetPos = getBodyPos(targetBody.id);
-          const dx = ship.x - targetPos.x;
-          const dy = ship.y - targetPos.y;
-          const dist = Math.hypot(dx, dy);
-          // Approximate target velocity numerically
-          const p1 = getBodyPos(targetBody.id);
-          const p2 = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime + 1);
-          const targetVx = p2.x - p1.x;
-          const targetVy = p2.y - p1.y;
-          const relVx = ship.vx - targetVx;
-          const relVy = ship.vy - targetVy;
-          const relSpeed = Math.hypot(relVx, relVy);
-          const bodyRadius = targetBody.radius ?? 0;
-          const altitude = Math.max(0, dist - bodyRadius);
-          // Simple braking distance estimate (surface-relative)
-          const shipMass = ship.dryMass + ship.fuelLevel;
-          const maxDecel = ship.engineThrust / shipMass;
-          const surfaceBrakingDist = (relSpeed * relSpeed) / (2 * 0.85 * maxDecel) + 500000;
-
-          if (altitude <= surfaceBrakingDist) {
-            // Decel phase: point toward target, reverse thrust (matches autopilot).
-            routeHeading = Math.atan2(-dy, -dx);
-            routeThrottle = -Math.min(100, (relSpeed / 120) * 10);
-          } else {
-            // Accel phase: burn toward target
-            routeHeading = Math.atan2(-dy, -dx);
-            routeThrottle = 90;
-          }
-        }
-      } else if (autopilotMode === "match-speed" && selectedBodyId) {
-        const targetBody = bodies.find((b) => b.id === selectedBodyId);
-        if (targetBody) {
-          const p1 = getBodyPos(targetBody.id);
-          const p2 = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime + 1);
-          const targetVx = p2.x - p1.x;
-          const targetVy = p2.y - p1.y;
-          const relVx = ship.vx - targetVx;
-          const relVy = ship.vy - targetVy;
-          routeHeading = Math.atan2(-relVy, -relVx);
-          routeThrottle = 40;
-        }
-      } else if (autopilotMode === "circularize") {
-        routeThrottle = 40;
-      }
-
-      lastRouteRef.current = predictShipRoute(
-        { ...ship, heading: routeHeading },
-        bodies,
-        gameTime,
-        86400 * 4,
-        24,       // reduced from 72 — enough for visual trace, much cheaper
-        routeThrottle
-        // No cache — prediction sub-steps need accurate per-step body positions
+    if (selectedBody) {
+      const targetPos = getBodyPos(selectedBody.id);
+      drawVectorLine(
+        ctx,
+        shipPt,
+        targetPos.x - ship.x,
+        targetPos.y - ship.y,
+        vectorLength * 0.9,
+        "rgba(250,204,21,0.95)",
+        "LOS",
+        true
       );
+      return;
     }
 
-    const route = lastRouteRef.current;
+    const prognosis = lastRouteRef.current;
+    const leadIndex = Math.min(Math.max(4, Math.floor(prognosis.points.length * 0.08)), prognosis.points.length - 1);
+    const leadPoint = prognosis.points[leadIndex];
+    if (leadPoint) {
+      drawVectorLine(
+        ctx,
+        shipPt,
+        leadPoint.x - ship.x,
+        leadPoint.y - ship.y,
+        vectorLength * 0.9,
+        "rgba(250,204,21,0.95)",
+        "LOS",
+        true
+      );
+    }
+  };
+
+  const pickRouteReferenceBody = (): CelestialBody | null => {
+    if (selectedBody) return selectedBody;
+    const candidates = bodies.filter((body) => body.gravitySource || body.type === "star");
+    if (candidates.length === 0) return null;
+    return candidates.reduce((best, body) => {
+      const bestPos = getBodyPos(best.id);
+      const bodyPos = getBodyPos(body.id);
+      const bestAltitude = Math.hypot(ship.x - bestPos.x, ship.y - bestPos.y) - (best.radius ?? 0);
+      const bodyAltitude = Math.hypot(ship.x - bodyPos.x, ship.y - bodyPos.y) - (body.radius ?? 0);
+      return bodyAltitude < bestAltitude ? body : best;
+    }, candidates[0]);
+  };
+
+  const analyzeRoute = (points: Point[], duration: number, referenceBody: CelestialBody | null): RoutePrognosis => {
+    const timedPoints = points.map((point, index) => ({
+      ...point,
+      t: points.length > 1 ? (duration * index) / (points.length - 1) : 0,
+    }));
+    let referenceClosestIndex = 0;
+    let referenceClosestAltitude = Infinity;
+    let selectedClosestIndex: number | null = null;
+    let selectedClosestDistance: number | null = null;
+    let impactIndex: number | null = null;
+
+    timedPoints.forEach((point, index) => {
+      const t = gameTime + point.t;
+      if (referenceBody) {
+        const bodyPos = getAbsoluteBodyPosition(referenceBody.id, bodies, t);
+        const altitude = Math.hypot(point.x - bodyPos.x, point.y - bodyPos.y) - (referenceBody.radius ?? 0);
+        if (altitude < referenceClosestAltitude) {
+          referenceClosestAltitude = altitude;
+          referenceClosestIndex = index;
+        }
+        if (impactIndex === null && altitude <= 0) {
+          impactIndex = index;
+        }
+      }
+
+      if (selectedBody) {
+        const targetPos = getAbsoluteBodyPosition(selectedBody.id, bodies, t);
+        const targetDistance = Math.hypot(point.x - targetPos.x, point.y - targetPos.y);
+        if (selectedClosestDistance === null || targetDistance < selectedClosestDistance) {
+          selectedClosestDistance = targetDistance;
+          selectedClosestIndex = index;
+        }
+      }
+    });
+
+    return {
+      points: timedPoints,
+      duration,
+      referenceBodyId: referenceBody?.id ?? null,
+      referenceClosestIndex,
+      referenceClosestAltitude,
+      selectedClosestIndex,
+      selectedClosestDistance,
+      impactIndex,
+    };
+  };
+
+  const drawRouteMarker = (
+    ctx: CanvasRenderingContext2D,
+    point: RoutePoint,
+    center: Point,
+    width: number,
+    height: number,
+    label: string,
+    color: string
+  ) => {
+    const pt = toScreen(point, center, width, height);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(pt.x - 8, pt.y);
+    ctx.lineTo(pt.x + 8, pt.y);
+    ctx.moveTo(pt.x, pt.y - 8);
+    ctx.lineTo(pt.x, pt.y + 8);
+    ctx.stroke();
+    ctx.font = "bold 10px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.fillText(label, pt.x + 9, pt.y - 9);
+  };
+
+  const drawRoute = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
+    routeFrameCounter.current++;
+    if (routeFrameCounter.current % 10 === 0 || lastRouteRef.current.points.length === 0) {
+      const selectedTarget = selectedBodyId ? bodies.find((body) => body.id === selectedBodyId) : null;
+      const targetDistance = selectedTarget
+        ? Math.hypot(ship.x - getBodyPos(selectedTarget.id).x, ship.y - getBodyPos(selectedTarget.id).y)
+        : null;
+      const shipSpeed = Math.max(1, Math.hypot(ship.vx, ship.vy));
+      const routeDuration = targetDistance
+        ? Math.max(7200, Math.min(86400 * 5, (targetDistance / shipSpeed) * 2.2))
+        : 86400 * 3;
+      const rawRoute = predictShipRoute(
+        ship,
+        bodies,
+        gameTime,
+        routeDuration,
+        96,
+        0
+      );
+
+      lastRouteRef.current = analyzeRoute(rawRoute, routeDuration, pickRouteReferenceBody());
+    }
+
+    const prognosis = lastRouteRef.current;
+    const route = prognosis.points;
     if (route.length < 2) return;
 
-    ctx.strokeStyle = `${palette.accent}88`;
-    ctx.lineWidth = 1.4;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    route.forEach((world, index) => {
-      const pt = toScreen(world, center, width, height);
-      if (index === 0) ctx.moveTo(pt.x, pt.y);
-      else ctx.lineTo(pt.x, pt.y);
-    });
-    ctx.stroke();
     ctx.setLineDash([]);
+    ctx.lineWidth = 1.5;
+    for (let index = 1; index < route.length; index++) {
+      const prev = toScreen(route[index - 1], center, width, height);
+      const next = toScreen(route[index], center, width, height);
+      const alpha = clamp(0.92 - index / route.length * 0.55, 0.22, 0.92);
+      ctx.strokeStyle = colorWithAlpha(palette.accent, alpha);
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(next.x, next.y);
+      ctx.stroke();
+    }
+
+    const tickEvery = Math.max(8, Math.floor(route.length / 8));
+    route.forEach((point, index) => {
+      if (index === 0 || index % tickEvery !== 0) return;
+      const pt = toScreen(point, center, width, height);
+      ctx.fillStyle = "rgba(226,232,240,0.55)";
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    const referenceBody = prognosis.referenceBodyId ? bodies.find((body) => body.id === prognosis.referenceBodyId) : null;
+    const periPoint = route[prognosis.referenceClosestIndex];
+    if (referenceBody && periPoint) {
+      const label = `Pe ${formatDistanceMeters(prognosis.referenceClosestAltitude)} T-${formatDuration(periPoint.t)}`;
+      drawRouteMarker(ctx, periPoint, center, width, height, label, prognosis.referenceClosestAltitude <= 0 ? "#ef4444" : "#facc15");
+    }
+
+    if (selectedBody && prognosis.selectedClosestIndex !== null && prognosis.selectedClosestDistance !== null) {
+      const closestPoint = route[prognosis.selectedClosestIndex];
+      if (closestPoint) {
+        const label = `CA ${formatDistanceMeters(prognosis.selectedClosestDistance)} T-${formatDuration(closestPoint.t)}`;
+        drawRouteMarker(ctx, closestPoint, center, width, height, label, "#38bdf8");
+      }
+    }
+
+    if (prognosis.impactIndex !== null) {
+      const impactPoint = route[prognosis.impactIndex];
+      if (impactPoint) {
+        drawRouteMarker(ctx, impactPoint, center, width, height, `IMPACT T-${formatDuration(impactPoint.t)}`, "#ef4444");
+      }
+    }
+
+    const readoutX = 14;
+    const readoutY = selectedBody ? 62 : 48;
+    const refName = referenceBody?.name ?? "NONE";
+    ctx.fillStyle = "rgba(2,6,23,0.74)";
+    ctx.strokeStyle = "rgba(148,163,184,0.28)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(readoutX - 6, readoutY - 13, 318, 56);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "rgba(226,232,240,0.78)";
+    ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.fillText(`PROGNOSIS ${formatDuration(prognosis.duration)} COAST`, readoutX, readoutY);
+    ctx.fillText(`REF ${refName}`, readoutX, readoutY + 14);
+    ctx.fillStyle = prognosis.referenceClosestAltitude <= 0 ? "#f87171" : "rgba(250,204,21,0.9)";
+    ctx.fillText(referenceBody ? `Pe ${formatDistanceMeters(prognosis.referenceClosestAltitude)}` : "Pe --", readoutX, readoutY + 28);
+    ctx.fillStyle = "rgba(226,232,240,0.68)";
+    const shipMass = ship.dryMass + ship.fuelLevel;
+    const shipAcceleration = ship.engineThrust / Math.max(1, shipMass);
+    ctx.fillText(`MASS ${Math.round(shipMass).toLocaleString()} kg  ACC ${shipAcceleration.toFixed(2)} m/s2`, readoutX, readoutY + 42);
   };
 
   const drawMiningBeam = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
@@ -754,6 +961,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
 
     drawRoute(ctx, center, width, height);
     drawMiningBeam(ctx, center, width, height);
+    drawFlightVectors(ctx, center, width, height);
     drawShip(ctx, center, width, height);
 
     ctx.fillStyle = "rgba(226,232,240,0.72)";
@@ -764,6 +972,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       const pos = getBodyPos(selectedBody.id);
       ctx.fillText(`TARGET ${selectedBody.name} ${formatDistanceMeters(Math.hypot(ship.x - pos.x, ship.y - pos.y))}`, 14, 46);
     }
+
+    observeFrame();
   }, [
     bodies,
     cameraMode,

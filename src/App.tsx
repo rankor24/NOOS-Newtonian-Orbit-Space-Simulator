@@ -3,29 +3,24 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import { useState, useEffect, useRef, lazy, Suspense } from "react";
+import { useState, useEffect, useRef } from "react";
 import { StarSystemCanvas } from "./components/StarSystemCanvas";
 import { EliteCockpitHud } from "./components/EliteCockpitHud";
 import { STARS, AU, getOrCreatePlayableStar } from "./data/stars";
 import { MainMenu } from "./components/MainMenu";
-import { createInitialState, createDefaultPlayerProfile, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
-import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "./data/ships";
-import { GameState, CelestialBody, SpaceContract, MissionLog, ShipState } from "./types";
-import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, buildBodyPositionCache, BodyPosCache, getDockingSpecs } from "./utils/physics";
+import { createInitialState, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
+import { DEFAULT_POWER_DISTRIBUTION } from "./data/ships";
+import { GameState, CelestialBody, SpaceContract } from "./types";
+import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
-import { computeApproachGuidance } from "./utils/autopilot";
-
-const MarketPanel = lazy(() => import("./components/MarketPanel").then((m) => ({ default: m.MarketPanel })));
-const UpgradesPanel = lazy(() => import("./components/UpgradesPanel").then((m) => ({ default: m.UpgradesPanel })));
-const ContractsPanel = lazy(() => import("./components/ContractsPanel").then((m) => ({ default: m.ContractsPanel })));
-const CommanderPanel = lazy(() => import("./components/CommanderPanel").then((m) => ({ default: m.CommanderPanel })));
-const ProfilePanel = lazy(() => import("./components/ProfilePanel").then((m) => ({ default: m.ProfilePanel })));
-
-const LazyPanelFallback = () => (
-  <div className="rounded-xl border border-stone-800 bg-stone-900/70 p-4 text-xs text-stone-500">Loading module...</div>
-);
+import { computeApproachGuidance } from "./utils/spaceFlightAutopilot";
+import { pickPortForBody } from "./utils/worldText";
+import { createCustomInitialState, migrateLoadedState } from "./app/systems/bootstrap";
+import { THEMES } from "./app/systems/themeSystem";
+import { useCockpitControls } from "./app/systems/useCockpitControls";
+import { GamePanels } from "./app/systems/GamePanels";
 import {
 Sparkles,
 Compass,
@@ -57,188 +52,7 @@ const STAR_ARRIVAL_RADIUS_LY = 0.02;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const angleDelta = (target: number, current: number) => Math.atan2(Math.sin(target - current), Math.cos(target - current));
 
-const normalizePowerDistribution = (input: Partial<ShipState["powerDistribution"]> | undefined): ShipState["powerDistribution"] => {
-const shields = Math.max(0, input?.shields ?? DEFAULT_POWER_DISTRIBUTION.shields);
-const engines = Math.max(0, input?.engines ?? DEFAULT_POWER_DISTRIBUTION.engines);
-const weapons = Math.max(0, input?.weapons ?? DEFAULT_POWER_DISTRIBUTION.weapons);
-const total = shields + engines + weapons;
-if (total <= 0) return DEFAULT_POWER_DISTRIBUTION;
-
-const normalizedShields = Math.round((shields / total) * 100);
-const normalizedEngines = Math.round((engines / total) * 100);
-return {
-shields: normalizedShields,
-engines: normalizedEngines,
-weapons: 100 - normalizedShields - normalizedEngines,
-};
-};
-
-function getBodyVelocity(body: CelestialBody, bodies: CelestialBody[], time: number): { vx: number; vy: number } {
-if (!body.parentId) return { vx: 0, vy: 0 };
-const dt = 1;
-const current = getAbsoluteBodyPosition(body.id, bodies, time);
-const next = getAbsoluteBodyPosition(body.id, bodies, time + dt);
-return { vx: next.x - current.x, vy: next.y - current.y };
-}
-
-const createCustomInitialState = (
-  name: string,
-  starId: string,
-  profession: "miner" | "merchant" | "explorer"
-): GameState => {
-  // Ensure the playable star is built lazily under the stars core registry
-  getOrCreatePlayableStar(starId);
-  
-  // Create solid initial state
-  const tempState = createInitialState(name);
-  
-  // Custom modifications:
-  let startingCredits = 2000;
-  let miningXp = 0;
-  let tradeXp = 0;
-  let explorationXp = 0;
-  
-  const ship = { ...tempState.ship };
-  
-  if (profession === "merchant") {
-    startingCredits = 3500; // Starting capital
-    tradeXp = 500; // rank 2 Trade
-    ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 1, luxuries: 2, he3: 0 };
-  } else if (profession === "miner") {
-    startingCredits = 1500;
-    miningXp = 500; // rank 2 Mining
-    ship.miningPower = 4.0; // drill_i bonus
-    ship.installedUpgradeIds = ["drill_i"];
-    ship.cargo = { water: 2, fuel: 0, ore: 1, machinery: 0, luxuries: 0, he3: 0 };
-  } else if (profession === "explorer") {
-    startingCredits = 1200;
-    explorationXp = 500; // rank 2 Exploration
-    ship.scannerRangeLy = 12; // sensor_i bonus
-    ship.systemScannerRange = 8 * AU; // sensor_i range
-    ship.installedUpgradeIds = ["sensor_i"];
-    ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 0, luxuries: 0, he3: 1 }; // starting Helium-3!
-  }
-  
-  // Coordinate positioning around active starting star:
-  let startBodyId = "sol_earth";
-  let startPortId = "base_earth_1";
-  
-  const activePlayableStar = getOrCreatePlayableStar(starId) || STARS[0];
-  const starPlanets = activePlayableStar.planets;
-  
-  if (starId !== "star_sol") {
-    // Look for first populated planetary body or fallback
-    const startBody = starPlanets.find(b => b.hasMarket) || starPlanets[0];
-    if (startBody) {
-      startBodyId = startBody.id;
-      startPortId = startBody.id; // defaults as planet-id port
-      
-      const planetPos = getAbsoluteBodyPosition(startBody.id, starPlanets, 0);
-      ship.x = planetPos.x + 2.5e7; // Orbit distance around selected body
-      ship.y = planetPos.y;
-      
-      // Calculate planet velocity to matching flight orbital track
-      const dt = 1;
-      const t0 = getAbsoluteBodyPosition(startBody.id, starPlanets, 0);
-      const t1 = getAbsoluteBodyPosition(startBody.id, starPlanets, dt);
-      const planetVx = t1.x - t0.x;
-      const planetVy = t1.y - t0.y;
-      
-      ship.vx = planetVx;
-      ship.vy = planetVy + 1500; // Stable tangential orbital velocity delta
-    }
-  }
-
-  const ownedShipRecord = {
-    id: ship.id || "starter_sidewinder_ship",
-    hullId: ship.hullId || SIDEWINDER_STARTER_PROFILE.id,
-    name: ship.name,
-    ship: ship,
-    homePortId: startPortId
-  };
-
-  const logs: MissionLog[] = [
-    {
-      timestamp: "Year 2086, Day 01 - 00:00:00",
-      text: `Flight Certificate Activated. Commander ${name} online around ${activePlayableStar.name}. Starting alignment verified.`,
-      type: "info"
-    },
-    {
-      timestamp: "Year 2086, Day 01 - 00:00:01",
-      text: `License Type: ${profession === "miner" ? "Asteroid Miner" : profession === "merchant" ? "Merchant Courier" : "Stellar Cartographer"} (Rank 2 Secured).`,
-      type: "success"
-    }
-  ];
-
-  return {
-    ...tempState,
-    profileId: `cmdr_${Date.now()}`,
-    activeStarId: starId,
-    commanderName: name,
-    playerCredits: startingCredits,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    selectedBodyId: startBodyId,
-    selectedPortId: startPortId,
-    ship: ship,
-    ownedShips: [ownedShipRecord],
-    activeShipId: ownedShipRecord.id,
-    playerProfile: {
-      ...tempState.playerProfile,
-      overallLevel: 1,
-      career: {
-        mining: { xp: miningXp, level: miningXp > 0 ? 2 : 1 },
-        trade: { xp: tradeXp, level: tradeXp > 0 ? 2 : 1 },
-        exploration: { xp: explorationXp, level: explorationXp > 0 ? 2 : 1 },
-        operations: { xp: 0, level: 1 },
-        security: { xp: 0, level: 1 }
-      }
-    },
-    logs
-  };
-};
-
 export default function App() {
-const migrateLoadedState = (parsed: any): GameState => {
-const fallback = createInitialState(parsed?.commanderName || "Commander");
-const ship = {
-...fallback.ship,
-...(parsed?.ship || {}),
-fuelLevel: (parsed?.ship?.fuelLevel ?? 0) > 0 ? parsed.ship.fuelLevel : fallback.ship.fuelLevel,
-battery: (parsed?.ship?.battery ?? 0) > 0 ? parsed.ship.battery : fallback.ship.battery,
-powerDistribution: normalizePowerDistribution(parsed?.ship?.powerDistribution),
-cargoCapacityTons: parsed?.ship?.cargoCapacityTons ?? parsed?.ship?.cargoCapacity ?? fallback.ship.cargoCapacityTons,
-passengerCapacity: parsed?.ship?.passengerCapacity ?? 0,
-passengerCount: parsed?.ship?.passengerCount ?? 0,
-passengerPodSlots: parsed?.ship?.passengerPodSlots ?? 0,
-installedUpgradeIds: parsed?.ship?.installedUpgradeIds ?? parsed?.unlockedUpgradeIds ?? [],
-};
-const activeShipId = parsed?.activeShipId || ship.id || fallback.activeShipId;
-const ownedShips = Array.isArray(parsed?.ownedShips) && parsed.ownedShips.length > 0
-? parsed.ownedShips.map((entry: any) => ({ ...entry, ship: entry?.id === activeShipId ? ship : { ...ship, ...(entry?.ship || {}) } }))
-: [{ id: activeShipId, hullId: ship.hullId || 'starter_sidewinder_ship', name: ship.name, ship, homePortId: parsed?.dockedPortId || fallback.selectedPortId }];
-return {
-...fallback,
-...parsed,
-ship,
-ownedShips,
-activeShipId,
-unlockedUpgradeIds: parsed?.unlockedUpgradeIds ?? ship.installedUpgradeIds ?? [],
-playerProfile: {
-...createDefaultPlayerProfile(),
-...(parsed?.playerProfile || {}),
-career: { ...createDefaultPlayerProfile().career, ...(parsed?.playerProfile?.career || {}) },
-reputation: { ...(parsed?.playerProfile?.reputation || {}) },
-stats: { ...createDefaultPlayerProfile().stats, ...(parsed?.playerProfile?.stats || {}) },
-},
-commanderName: parsed?.commanderName ?? fallback.commanderName,
-saveVersion: parsed?.saveVersion ?? fallback.saveVersion,
-profileId: parsed?.profileId ?? fallback.profileId,
-createdAt: parsed?.createdAt ?? fallback.createdAt,
-updatedAt: parsed?.updatedAt ?? fallback.updatedAt,
-};
-};
-
 const [gameState, setGameState] = useState<GameState>(() => {
 const best = loadBestAvailableProfile();
 if ((best as any)?.ship?.cargo) return migrateLoadedState(best);
@@ -312,10 +126,10 @@ const selectedBodyPosition = selectedBody
 ? getAbsoluteBodyPosition(selectedBody.id, systemBodies, gameState.gameTime)
 : null;
 const selectedBodyVelocity = selectedBody
-? getBodyVelocity(selectedBody, systemBodies, gameState.gameTime)
+? getBodyVelocity(selectedBody.id, systemBodies, gameState.gameTime)
 : { vx: 0, vy: 0 };
 const shipyardCatalog = getShipyardCatalog();
-const selectedPortName = gameState.dockedPortId || gameState.selectedPortId || "current port";
+const selectedPortName = gameState.dockedPortId || "current port";
 const dockedPortInventory = gameState.ownedShips.filter((entry) => entry.homePortId === gameState.dockedPortId);
 const dockingDistance = selectedBodyPosition
 ? Math.hypot(gameState.ship.x - selectedBodyPosition.x, gameState.ship.y - selectedBodyPosition.y)
@@ -333,14 +147,12 @@ dockingDistance < dockingSpecs.maxDistance &&
 dockingRelativeSpeed < dockingSpecs.maxSpeed;
 
 // Dominant orbital gravity source reference (uses frame cache)
-const posCacheForRender = posCacheRef.current;
 const domGravity = getDominantGravitySource(
 gameState.ship.x,
 gameState.ship.y,
 systemBodies,
 gameState.gameTime,
-activeStar.mass * 1.989e30,
-posCacheForRender
+activeStar.mass * 1.989e30
 );
 
 // Compute real-time relative orbital parameters
@@ -348,161 +160,8 @@ const relativeOrbit = computeOrbitMetrics(
 gameState.ship,
 domGravity.body || systemBodies[0],
 systemBodies,
-gameState.gameTime,
-posCacheForRender
+gameState.gameTime
 );
-
-// Themes database matching colors across HUD modules
-const THEMES = {
-amber: {
-colorName: "Retro Amber / Elite",
-accent: "text-amber-500",
-accentLight: "text-amber-400",
-accentHover: "hover:text-amber-300",
-bgAccent: "bg-amber-500",
-bgAccentMuted: "bg-amber-500/10",
-bgAccentHover: "hover:bg-amber-400",
-borderAccent: "border-amber-500/30",
-borderAccentFocus: "border-amber-400",
-borderTabActive: "border-t-2 border-t-amber-500",
-textTabActive: "text-amber-400",
-statusGlow: "shadow-amber-500/5",
-statusText: "text-amber-400 animate-pulse",
-comLinkColor: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-headerPingColor: "bg-amber-400",
-headerIconStyle: "bg-amber-500/10 border-amber-500/40 text-amber-400",
-autopilotCircularizeStyle: "bg-amber-500/20 border-amber-500 text-amber-400 shadow-md shadow-amber-500/25",
-bgBadge: "bg-amber-500/10 text-amber-400 border border-amber-500/20",
-accentHex: "#f59e0b",
-
-// Core Layout Palette mapping to override "brown" stone in other themes
-bodyBg: "bg-stone-950",
-panelBg: "bg-stone-900/90",
-panelBorder: "border-stone-800/80",
-innerBg: "bg-stone-950/80",
-innerBorder: "border-stone-850",
-buttonBg: "bg-stone-900",
-buttonHover: "hover:bg-stone-800",
-tabHeaderBg: "bg-stone-950",
-textMuted: "text-stone-500",
-textNormal: "text-stone-400",
-statusBarBg: "bg-stone-950 border border-stone-850",
-borderTabNormal: "border-stone-800/60",
-hudGlowRadial: "bg-[radial-gradient(ellipse_at_center,rgba(245,158,11,0.025)_0%,rgba(0,0,0,0)_85%)]",
-starColorOverride: "",
-},
-blue: {
-colorName: "Deep Space Blue",
-accent: "text-sky-500",
-accentLight: "text-sky-400",
-accentHover: "hover:text-sky-300",
-bgAccent: "bg-sky-500",
-bgAccentMuted: "bg-sky-500/10",
-bgAccentHover: "hover:bg-sky-400",
-borderAccent: "border-sky-500/30",
-borderAccentFocus: "border-sky-400",
-borderTabActive: "border-t-2 border-t-sky-500",
-textTabActive: "text-sky-400",
-statusGlow: "shadow-sky-500/5",
-statusText: "text-sky-400 animate-pulse",
-comLinkColor: "bg-sky-500/10 text-sky-400 border-sky-500/20",
-headerPingColor: "bg-sky-400",
-headerIconStyle: "bg-sky-500/10 border-sky-500/40 text-sky-400",
-autopilotCircularizeStyle: "bg-sky-500/20 border-sky-500 text-sky-400 shadow-md shadow-sky-500/25",
-bgBadge: "bg-sky-500/10 text-sky-400 border border-sky-500/20",
-accentHex: "#0ea5e9",
-
-// Core Layout Palette mapping to override "brown" stone in other themes
-bodyBg: "bg-slate-950",
-panelBg: "bg-slate-900/90",
-panelBorder: "border-slate-800/80",
-innerBg: "bg-slate-955/80 md:bg-slate-950/80",
-innerBorder: "border-slate-850",
-buttonBg: "bg-slate-900",
-buttonHover: "hover:bg-slate-800",
-tabHeaderBg: "bg-slate-950",
-textMuted: "text-slate-500",
-textNormal: "text-slate-400",
-statusBarBg: "bg-slate-950 border border-slate-850",
-borderTabNormal: "border-slate-800/60",
-hudGlowRadial: "bg-[radial-gradient(ellipse_at_center,rgba(14,165,233,0.025)_0%,rgba(0,0,0,0)_85%)]",
-starColorOverride: "",
-},
-green: {
-colorName: "Matrix Green",
-accent: "text-emerald-500",
-accentLight: "text-emerald-400",
-accentHover: "hover:text-emerald-300",
-bgAccent: "bg-emerald-500",
-bgAccentMuted: "bg-emerald-500/10",
-bgAccentHover: "hover:bg-emerald-400",
-borderAccent: "border-emerald-500/30",
-borderAccentFocus: "border-emerald-400",
-borderTabActive: "border-t-2 border-t-emerald-500",
-textTabActive: "text-emerald-400",
-statusGlow: "shadow-emerald-500/5",
-statusText: "text-emerald-400 animate-pulse",
-comLinkColor: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
-headerPingColor: "bg-emerald-400",
-headerIconStyle: "bg-emerald-500/10 border-emerald-500/40 text-emerald-400",
-autopilotCircularizeStyle: "bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-md shadow-emerald-500/25",
-bgBadge: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
-accentHex: "#10b981",
-
-// Core Layout Palette mapping to override "brown" stone in other themes
-bodyBg: "bg-[#040805]",
-panelBg: "bg-[#0b140e]/95",
-panelBorder: "border-[#152a1a]",
-innerBg: "bg-[#060c08]",
-innerBorder: "border-[#1c3a23]",
-buttonBg: "bg-[#0c1810]",
-buttonHover: "hover:bg-[#183120]",
-tabHeaderBg: "bg-[#0b140e]",
-textMuted: "text-[#4a6b52]",
-textNormal: "text-[#7ca685]",
-statusBarBg: "bg-[#060c08] border border-[#1c3a23]",
-borderTabNormal: "border-[#152a1a]/60",
-hudGlowRadial: "bg-[radial-gradient(ellipse_at_center,rgba(16,185,129,0.025)_0%,rgba(0,0,0,0)_85%)]",
-starColorOverride: "",
-},
-red: {
-colorName: "Red Battle Mode",
-accent: "text-rose-500",
-accentLight: "text-rose-450",
-accentHover: "hover:text-rose-300",
-bgAccent: "bg-rose-600",
-bgAccentMuted: "bg-rose-500/10",
-bgAccentHover: "hover:bg-rose-550",
-borderAccent: "border-rose-500/30",
-borderAccentFocus: "border-rose-400",
-borderTabActive: "border-t-2 border-t-rose-600",
-textTabActive: "text-rose-450",
-statusGlow: "shadow-rose-500/5",
-statusText: "text-rose-500 animate-pulse",
-comLinkColor: "bg-rose-500/15 text-rose-400 border-rose-500/20",
-headerPingColor: "bg-rose-400",
-headerIconStyle: "bg-rose-500/10 border-rose-500/40 text-rose-450",
-autopilotCircularizeStyle: "bg-rose-500/20 border-rose-550 text-rose-450 shadow-md shadow-rose-550/25",
-bgBadge: "bg-rose-500/10 text-rose-400 border border-rose-500/20",
-accentHex: "#f43f5e",
-
-// Core Layout Palette mapping to override "brown" stone in other themes
-bodyBg: "bg-[#090405]",
-panelBg: "bg-[#14080a]/95",
-panelBorder: "border-[#2d1215]",
-innerBg: "bg-[#090304]",
-innerBorder: "border-[#3d181d]",
-buttonBg: "bg-[#180a0c]",
-buttonHover: "hover:bg-[#2d1215]",
-tabHeaderBg: "bg-[#14080a]",
-textMuted: "text-[#7a3b40]",
-textNormal: "text-[#bd646b]",
-statusBarBg: "bg-[#090304] border border-[#3d181d]",
-borderTabNormal: "border-[#2d1215]/60",
-hudGlowRadial: "bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.025)_0%,rgba(0,0,0,0)_85%)]",
-starColorOverride: "",
-}
-};
 
 const activeTheme = THEMES[uiTheme];
 
@@ -571,9 +230,44 @@ interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy:
 }));
 }
 
-frameId = requestAnimationFrame(tick);
-return;
+    frameId = requestAnimationFrame(tick);
+    return;
 }
+
+    if (current.isDocked && current.dockedBodyId) {
+      const dockBody = systemBodiesRef.current.find((body) => body.id === current.dockedBodyId);
+      if (dockBody) {
+        const dockPos = posCache.get(dockBody.id) || getAbsoluteBodyPosition(dockBody.id, systemBodiesRef.current, current.gameTime);
+        const dockVelocity = getBodyVelocity(dockBody.id, systemBodiesRef.current, current.gameTime);
+        const offsetX = current.ship.x - dockPos.x;
+        const offsetY = current.ship.y - dockPos.y;
+        const offsetLength = Math.hypot(offsetX, offsetY);
+        const parkingRadius = (dockBody.radius ?? 0) + 1000;
+        const ux = offsetLength > 1 ? offsetX / offsetLength : 1;
+        const uy = offsetLength > 1 ? offsetY / offsetLength : 0;
+
+        if (autopilotRef.current !== "none") {
+          setAutopilotMode("none");
+        }
+        setIsThrusting(false);
+        setGameState((prev) => ({
+          ...prev,
+          gameTime: current.gameTime + gameDt,
+          miningTargetId: null,
+          ship: {
+            ...prev.ship,
+            x: dockPos.x + ux * parkingRadius,
+            y: dockPos.y + uy * parkingRadius,
+            vx: dockVelocity.vx,
+            vy: dockVelocity.vy,
+            throttlePercent: 0,
+          },
+        }));
+
+        frameId = requestAnimationFrame(tick);
+        return;
+      }
+    }
 
     // --- 1. Autopilot Core Control Loop ---
     let targetHeading = current.ship.heading;
@@ -598,11 +292,9 @@ const dx = current.ship.x - targetBodyPos.x;
 const dy = current.ship.y - targetBodyPos.y;
 
       // Approximate target velocity numerically (need next frame position for velocity)
-      const dtVel = 1.0;
-      const nextCache = buildBodyPositionCache(systemBodiesRef.current, current.gameTime + dtVel);
-      const nextBodyPos = nextCache.get(activeTargetBody.id) || targetBodyPos;
-      const targetVx = nextBodyPos.x - targetBodyPos.x;
-      const targetVy = nextBodyPos.y - targetBodyPos.y;
+      const targetVelocity = getBodyVelocity(activeTargetBody.id, systemBodiesRef.current, current.gameTime);
+      const targetVx = targetVelocity.vx;
+      const targetVy = targetVelocity.vy;
 
       const relVx = current.ship.vx - targetVx;
       const relVy = current.ship.vy - targetVy;
@@ -672,6 +364,9 @@ if (current.selectedBodyId) {
 const bodyRadius = activeTargetBody.radius ?? 0;
 const shipMass = current.ship.dryMass + current.ship.fuelLevel;
 const maxDecel = current.ship.engineThrust / shipMass;
+const targetMass = activeTargetBody.type === "star"
+? (activeTargetBody.mass ?? 0) * 1.989e30
+: (activeTargetBody.mass ?? 0);
 
 // Compute guidance using Newtonian flight assist equations
 const activeSpecs = getDockingSpecs(activeTargetBody);
@@ -685,12 +380,17 @@ arrivalDistance: activeSpecs.maxDistance * 0.9,
 arrivalSpeed: Math.min(25, activeSpecs.maxSpeed * 0.1),
 safetyDistance: 400000,
 maxCruiseClosingSpeed: 4500,
+maxSupercruiseClosingSpeed: Math.max(current.ship.maxCruiseSpeed, 6_000_000),
+stationApproach: activeTargetBody.hasMarket,
+currentHeading: current.ship.heading,
+targetMass,
+bodyRadius,
 });
 
 if (guidance.phase === "arrived") {
 throttleCommand = 0;
 setAutopilotMode("none");
-addConsoleLog(`Autopilot: Approach secure around ${activeTargetBody.name || "target"}. Velocity matched within docking envelope.`, "success");
+addConsoleLog(`Autopilot: ${guidance.phase.toUpperCase()} complete around ${activeTargetBody.name || "target"}. Velocity matched within docking envelope.`, "success");
 } else {
 targetHeading = guidance.targetHeading;
 const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
@@ -927,9 +627,9 @@ logs: [
 
 // Transaction action triggers
 const executeBuy = (resourceId: string, amount: number) => {
-if (!gameState.isDocked || !gameState.dockedBodyId) return;
-const bodyId = gameState.dockedBodyId;
-const localMarket = gameState.markets[bodyId];
+if (!gameState.isDocked || !gameState.dockedPortId) return;
+const portId = gameState.dockedPortId;
+const localMarket = gameState.markets[portId];
 if (!localMarket) return;
 const resMarket = localMarket[resourceId];
 if (!resMarket || resMarket.available < amount) return;
@@ -950,12 +650,12 @@ return;
 
 setGameState((prev) => {
 const copyMarkets = { ...prev.markets };
-const copyLocal = { ...copyMarkets[bodyId] };
+const copyLocal = { ...copyMarkets[portId] };
 copyLocal[resourceId] = {
 ...copyLocal[resourceId],
 available: copyLocal[resourceId].available - amount,
 };
-copyMarkets[bodyId] = copyLocal;
+copyMarkets[portId] = copyLocal;
 
 const copyShipCargo = { ...prev.ship.cargo };
 copyShipCargo[resourceId] = (copyShipCargo[resourceId] || 0) + amount;
@@ -979,9 +679,9 @@ addConsoleLog(`Acquired ${amount}t of ${resMarket.name} for ${totalCost}¢. Carg
 };
 
 const executeSell = (resourceId: string, amount: number) => {
-if (!gameState.isDocked || !gameState.dockedBodyId) return;
-const bodyId = gameState.dockedBodyId;
-const localMarket = gameState.markets[bodyId];
+if (!gameState.isDocked || !gameState.dockedPortId) return;
+const portId = gameState.dockedPortId;
+const localMarket = gameState.markets[portId];
 if (!localMarket) return;
 const resMarket = localMarket[resourceId];
 if (!resMarket) return;
@@ -993,12 +693,12 @@ const payout = resMarket.sellPrice * amount;
 
 setGameState((prev) => {
 const copyMarkets = { ...prev.markets };
-const copyLocal = { ...copyMarkets[bodyId] };
+const copyLocal = { ...copyMarkets[portId] };
 copyLocal[resourceId] = {
 ...copyLocal[resourceId],
 available: Math.min(copyLocal[resourceId].maxCapacity, copyLocal[resourceId].available + amount),
 };
-copyMarkets[bodyId] = copyLocal;
+copyMarkets[portId] = copyLocal;
 
 const copyShipCargo = { ...prev.ship.cargo };
 copyShipCargo[resourceId] = Math.max(0, copyShipCargo[resourceId] - amount);
@@ -1039,10 +739,26 @@ addConsoleLog(
 return;
 }
 
+const dockingPort = pickPortForBody(selectedBody, "markets") || pickPortForBody(selectedBody);
+if (!dockingPort) {
+addConsoleLog(`Docking denied by ${selectedBody.stationName || selectedBody.name}: no active port record found.`, "warning");
+return;
+}
+
+setAutopilotMode("none");
+setIsThrusting(false);
 setGameState((prev) => ({
 ...prev,
 isDocked: true,
 dockedBodyId: selectedBody.id,
+dockedPortId: dockingPort.id,
+miningTargetId: null,
+ship: {
+...prev.ship,
+vx: selectedBodyVelocity.vx,
+vy: selectedBodyVelocity.vy,
+throttlePercent: 0,
+},
 }));
 
 addConsoleLog(`✓ Spaceport tether established at ${selectedBody.stationName || selectedBody.name}. Standard atmospheres balanced. Trade networks unlocked.`, "success");
@@ -1050,11 +766,48 @@ setActiveTab("market"); // Open market tab instantly upon docking for frictionle
 };
 
 const handleUndockActivate = () => {
-setGameState((prev) => ({
+setAutopilotMode("none");
+setIsThrusting(false);
+setGameState((prev) => {
+const dockBody = systemBodiesRef.current.find((body) => body.id === prev.dockedBodyId);
+if (!dockBody) {
+return {
 ...prev,
 isDocked: false,
 dockedBodyId: null,
-}));
+dockedPortId: null,
+ship: { ...prev.ship, throttlePercent: 0 },
+};
+}
+
+const bodyPos = getAbsoluteBodyPosition(dockBody.id, systemBodiesRef.current, prev.gameTime);
+const bodyVelocity = getBodyVelocity(dockBody.id, systemBodiesRef.current, prev.gameTime);
+const offsetX = prev.ship.x - bodyPos.x;
+const offsetY = prev.ship.y - bodyPos.y;
+const offsetLength = Math.hypot(offsetX, offsetY);
+const ux = offsetLength > 1 ? offsetX / offsetLength : 1;
+const uy = offsetLength > 1 ? offsetY / offsetLength : 0;
+const parkingRadius = (dockBody.radius ?? 0) + Math.max(1_500_000, (dockBody.radius ?? 0) * 0.08);
+const targetMass = dockBody.type === "star" ? (dockBody.mass ?? 0) * 1.989e30 : (dockBody.mass ?? 0);
+const circularSpeed = targetMass > 0 ? Math.sqrt((6.6743e-11 * targetMass) / Math.max(1, parkingRadius)) : 0;
+const tangentX = -uy;
+const tangentY = ux;
+
+return {
+...prev,
+isDocked: false,
+dockedBodyId: null,
+dockedPortId: null,
+ship: {
+...prev.ship,
+x: bodyPos.x + ux * parkingRadius,
+y: bodyPos.y + uy * parkingRadius,
+vx: bodyVelocity.vx + tangentX * circularSpeed,
+vy: bodyVelocity.vy + tangentY * circularSpeed,
+throttlePercent: 0,
+},
+};
+});
 addConsoleLog(`✗ Spaceport clamps released. Attitude thrusters ready. Space pressure sealed. Safe flight, Commander.`, "info");
 };
 
@@ -1214,164 +967,21 @@ cargo: updatedCargo,
 addConsoleLog(`🌌 COGNITIVE WAVEFOLD INITIATED: Spacetime folded relative to ${dest.name} coordinates. Quantum engine depleted 1,000kg of Helium-3. Standard space entry captures successful.`, "success");
 };
 
-// Track visual states for pressed keyboard buttons to light up real cockpit displays
-const [pressedKeys, setPressedKeys] = useState<{
-thrust: boolean;
-steerLeft: boolean;
-steerRight: boolean;
-circMode: boolean;
-matchMode: boolean;
-}>({
-thrust: false,
-steerLeft: false,
-steerRight: false,
-circMode: false,
-matchMode: false,
+const {
+pressedKeys,
+handleRotateShip,
+setShipHeading,
+setThrottlePercent,
+setPowerDistribution,
+} = useCockpitControls({
+autopilotMode,
+selectedBodyExists: !!selectedBody,
+setAutopilotMode,
+setGameState,
+setIsThrusting,
+addConsoleLog,
+stateRef,
 });
-
-// Listen to keyboard controls for steering & thrusting
-useEffect(() => {
-const handleKeyDown = (e: KeyboardEvent) => {
-const activeEl = document.activeElement;
-// If typing in an input field (such as a search box or text log), suppress overrides
-if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
-return;
-}
-
-const key = e.key.toLowerCase();
-
-if (key === "arrowleft" || key === "a") {
-handleRotateShip(-Math.PI / 36); // rotate 5 degrees left
-setPressedKeys((p) => ({ ...p, steerLeft: true }));
-} else if (key === "arrowright" || key === "d") {
-handleRotateShip(Math.PI / 36);  // rotate 5 degrees right
-setPressedKeys((p) => ({ ...p, steerRight: true }));
-} else if (key === "arrowup" || key === "w") {
-e.preventDefault(); // maintain scroll viewport integrity
-if (autopilotMode === "none" || autopilotMode === "align-target") {
-setThrottlePercent(stateRef.current.ship.throttlePercent + 10);
-}
-setPressedKeys((p) => ({ ...p, thrust: true }));
-} else if (key === "arrowdown" || key === "s") {
-e.preventDefault();
-if (autopilotMode === "none" || autopilotMode === "align-target") {
-setThrottlePercent(stateRef.current.ship.throttlePercent - 10);
-}
-setPressedKeys((p) => ({ ...p, thrust: true }));
-} else if (e.key === " ") {
-e.preventDefault();
-if (autopilotMode === "none" || autopilotMode === "align-target") {
-setThrottlePercent(0);
-}
-setPressedKeys((p) => ({ ...p, thrust: true }));
-} else if (key === "c") {
-setPressedKeys((p) => ({ ...p, circMode: true }));
-if (selectedBody) {
-setAutopilotMode((prev) => (prev === "circularize" ? "none" : "circularize"));
-} else {
-addConsoleLog("Guidance: Select planetary orbit target before circularization request.", "warning");
-}
-} else if (key === "m") {
-setPressedKeys((p) => ({ ...p, matchMode: true }));
-if (selectedBody) {
-setAutopilotMode((prev) => (prev === "match-speed" ? "none" : "match-speed"));
-} else {
-addConsoleLog("Guidance: Select orbit target before match-speed request.", "warning");
-}
-}
-};
-
-const handleKeyUp = (e: KeyboardEvent) => {
-const activeEl = document.activeElement;
-if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
-return;
-}
-
-const key = e.key.toLowerCase();
-
-if (key === "arrowleft" || key === "a") {
-setPressedKeys((p) => ({ ...p, steerLeft: false }));
-} else if (key === "arrowright" || key === "d") {
-setPressedKeys((p) => ({ ...p, steerRight: false }));
-} else if (key === "arrowup" || key === "w" || key === "arrowdown" || key === "s" || e.key === " ") {
-setPressedKeys((p) => ({ ...p, thrust: false }));
-} else if (key === "c") {
-setPressedKeys((p) => ({ ...p, circMode: false }));
-} else if (key === "m") {
-setPressedKeys((p) => ({ ...p, matchMode: false }));
-}
-};
-
-window.addEventListener("keydown", handleKeyDown);
-window.addEventListener("keyup", handleKeyUp);
-return () => {
-window.removeEventListener("keydown", handleKeyDown);
-window.removeEventListener("keyup", handleKeyUp);
-};
-}, [autopilotMode, selectedBody]);
-
-// Handle active heading controls
-const handleRotateShip = (amount: number) => {
-setAutopilotMode("none"); // break autopilots when player steers manually
-setGameState((prev) => ({
-...prev,
-ship: {
-...prev.ship,
-heading: (prev.ship.heading + amount) % (Math.PI * 2),
-},
-}));
-};
-
-const setShipHeading = (heading: number) => {
-const normalized = ((heading % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-setAutopilotMode("none");
-setGameState((prev) => ({
-...prev,
-ship: {
-...prev.ship,
-heading: normalized,
-},
-}));
-};
-
-const setThrottlePercent = (value: number) => {
-const next = Math.max(-100, Math.min(100, Math.round(value)));
-setGameState((prev) => ({
-...prev,
-ship: {
-...prev.ship,
-throttlePercent: next,
-},
-}));
-setIsThrusting(next !== 0);
-};
-
-const setPowerDistribution = (channel: "shields" | "engines" | "weapons", value: number) => {
-const nextValue = Math.max(0, Math.min(100, Math.round(value)));
-setGameState((prev) => ({
-...prev,
-ship: (() => {
-const current = prev.ship.powerDistribution ?? DEFAULT_POWER_DISTRIBUTION;
-const otherChannels = (["shields", "engines", "weapons"] as const).filter((key) => key !== channel);
-const remaining = 100 - nextValue;
-const currentOtherTotal = otherChannels.reduce((sum, key) => sum + current[key], 0);
-const firstOther = currentOtherTotal > 0
-? Math.round((current[otherChannels[0]] / currentOtherTotal) * remaining)
-: Math.round(remaining / 2);
-const balancedDistribution = {
-...current,
-[channel]: nextValue,
-[otherChannels[0]]: firstOther,
-[otherChannels[1]]: remaining - firstOther,
-};
-
-return {
-...prev.ship,
-powerDistribution: balancedDistribution,
-};
-})(),
-}));
-};
 
 const mapView = (
   <StarSystemCanvas
@@ -1391,62 +1001,70 @@ const mapView = (
 );
 
 const activePanel = (
-  <Suspense fallback={<LazyPanelFallback />}>
-    <>
-<div className="space-y-4 mb-4">
-<ProfilePanel
-currentProfileId={gameState.profileId}
-profiles={profileSummaries}
-onSelectProfile={(profileId) => { const loaded = loadCommanderProfile(profileId); if (loaded?.ship?.cargo) setGameState(migrateLoadedState(loaded)); }}
-onSaveProfile={() => { const synced = syncOwnedShips(gameState); saveCommanderProfile(synced, synced.profileId); setProfileSummaries(listCommanderProfiles()); addConsoleLog(`Save control: commander profile saved for ${gameState.commanderName}.`, "success"); }}
-onCreateProfile={() => { const name = window.prompt("Commander name?", "Commander") || "Commander"; const fresh = createInitialState(name); saveCommanderProfile(fresh, fresh.profileId); setGameState(fresh); setProfileSummaries(listCommanderProfiles()); }}
-onDeleteProfile={() => { if (profileSummaries.length <= 1) return; deleteCommanderProfile(gameState.profileId); const next = listCommanderProfiles(); setProfileSummaries(next); const loaded = next[0] ? loadCommanderProfile(next[0].id) : null; if (loaded?.ship?.cargo) setGameState(migrateLoadedState(loaded)); }}
-/>
-<CommanderPanel commanderName={gameState.commanderName} profile={gameState.playerProfile} credits={gameState.playerCredits} />
-</div>
-{activeTab === "market" && (
-<MarketPanel
-gameState={gameState}
-onBuy={executeBuy}
-onSell={executeSell}
-onDock={handleDockActivate}
-onUndock={handleUndockActivate}
-onRefuel={() => {
-const missingFuel = Math.max(0, gameState.ship.maxFuel - gameState.ship.fuelLevel);
-const tons = Math.ceil(missingFuel / 1000);
-const cost = tons * 400;
-if (!gameState.isDocked || !gameState.dockedPortId || missingFuel <= 0) return;
-if (gameState.playerCredits < cost) { addConsoleLog("Refuel control: insufficient credits for propellant transfer.", "warning"); return; }
-setGameState((prev) => ({ ...prev, playerCredits: prev.playerCredits - cost, ship: { ...prev.ship, fuelLevel: prev.ship.maxFuel }, playerProfile: { ...prev.playerProfile, stats: { ...prev.playerProfile.stats, refuels: prev.playerProfile.stats.refuels + 1 } } }));
-addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}¢.`, "success");
-}}
-onToggleMining={handleToggleMining}
-onSelectPort={(portId) => setGameState((prev) => ({ ...prev, selectedPortId: portId }))}
-onBuyShip={handleBuyShip}
-onActivateShip={handleActivateOwnedShip}
-shipyardCatalog={shipyardCatalog}
-dockedPortInventory={dockedPortInventory}
-bodies={systemBodies}
-/>
-)}
-{activeTab === "upgrades" && (
-<UpgradesPanel
-ship={gameState.ship}
-playerCredits={gameState.playerCredits}
-unlockedUpgradeIds={gameState.unlockedUpgradeIds}
-onUnlockUpgrade={handleUnlockUpgrade}
-/>
-)}
-{activeTab === "contracts" && (
-<ContractsPanel
-gameState={gameState}
-bodies={systemBodies}
-onAcceptContract={handleAcceptContract}
-onCompleteContract={handleCompleteContract}
-/>
-)}
-</>
-</Suspense>
+  <GamePanels
+    activeTab={activeTab}
+    gameState={gameState}
+    profileSummaries={profileSummaries}
+    systemBodies={systemBodies}
+    shipyardCatalog={shipyardCatalog}
+    dockedPortInventory={dockedPortInventory}
+    onSelectProfile={(profileId) => {
+      const loaded = loadCommanderProfile(profileId);
+      if (loaded?.ship?.cargo) setGameState(migrateLoadedState(loaded));
+    }}
+    onSaveProfile={() => {
+      const synced = syncOwnedShips(gameState);
+      saveCommanderProfile(synced, synced.profileId);
+      setProfileSummaries(listCommanderProfiles());
+      addConsoleLog(`Save control: commander profile saved for ${gameState.commanderName}.`, "success");
+    }}
+    onCreateProfile={() => {
+      const name = window.prompt("Commander name?", "Commander") || "Commander";
+      const fresh = createInitialState(name);
+      saveCommanderProfile(fresh, fresh.profileId);
+      setGameState(fresh);
+      setProfileSummaries(listCommanderProfiles());
+    }}
+    onDeleteProfile={() => {
+      if (profileSummaries.length <= 1) return;
+      deleteCommanderProfile(gameState.profileId);
+      const next = listCommanderProfiles();
+      setProfileSummaries(next);
+      const loaded = next[0] ? loadCommanderProfile(next[0].id) : null;
+      if (loaded?.ship?.cargo) setGameState(migrateLoadedState(loaded));
+    }}
+    onBuy={executeBuy}
+    onSell={executeSell}
+    onDock={handleDockActivate}
+    onUndock={handleUndockActivate}
+    onRefuel={() => {
+      const missingFuel = Math.max(0, gameState.ship.maxFuel - gameState.ship.fuelLevel);
+      const tons = Math.ceil(missingFuel / 1000);
+      const cost = tons * 400;
+      if (!gameState.isDocked || !gameState.dockedPortId || missingFuel <= 0) return;
+      if (gameState.playerCredits < cost) {
+        addConsoleLog("Refuel control: insufficient credits for propellant transfer.", "warning");
+        return;
+      }
+      setGameState((prev) => ({
+        ...prev,
+        playerCredits: prev.playerCredits - cost,
+        ship: { ...prev.ship, fuelLevel: prev.ship.maxFuel },
+        playerProfile: {
+          ...prev.playerProfile,
+          stats: { ...prev.playerProfile.stats, refuels: prev.playerProfile.stats.refuels + 1 },
+        },
+      }));
+      addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}¢.`, "success");
+    }}
+    onToggleMining={handleToggleMining}
+    onSelectPort={(portId) => setGameState((prev) => prev.isDocked ? { ...prev, dockedPortId: portId } : prev)}
+    onBuyShip={handleBuyShip}
+    onActivateShip={handleActivateOwnedShip}
+    onUnlockUpgrade={handleUnlockUpgrade}
+    onAcceptContract={handleAcceptContract}
+    onCompleteContract={handleCompleteContract}
+  />
 );
 
   if (isInMainMenu) {

@@ -5,6 +5,7 @@
 
 import React from "react";
 import { GameState, SpaceContract, CelestialBody } from "../types";
+import { getAbsoluteBodyPosition, getBodyVelocity } from "../utils/physics";
 import { ListTodo, CheckCircle2, CircleDollarSign, Compass, AlertCircle, ArrowUpRight } from "lucide-react";
 
 interface ContractsPanelProps {
@@ -84,23 +85,14 @@ export const ContractsPanel: React.FC<ContractsPanelProps> = ({
               const targetBody = bodies.find((b) => b.id === contract.destinationId);
               
               if (targetBody) {
-                // local check
-                const relX = targetBody.semiMajorAxis * Math.cos(targetBody.meanAnomalyAtEpoch + (2 * Math.PI / targetBody.orbitalPeriod) * gameTime);
-                const relY = targetBody.semiMajorAxis * Math.sin(targetBody.meanAnomalyAtEpoch + (2 * Math.PI / targetBody.orbitalPeriod) * gameTime);
-                
-                // standard 0,0 for parent Sol
-                const dx = ship.x - relX;
-                const dy = ship.y - relY;
+                const targetPos = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime);
+                const dx = ship.x - targetPos.x;
+                const dy = ship.y - targetPos.y;
                 const dist = Math.hypot(dx, dy);
 
                 // Target velocity approach check
-                const dt = 1.0;
-                const nextX = targetBody.semiMajorAxis * Math.cos(targetBody.meanAnomalyAtEpoch + (2 * Math.PI / targetBody.orbitalPeriod) * (gameTime + dt));
-                const nextY = targetBody.semiMajorAxis * Math.sin(targetBody.meanAnomalyAtEpoch + (2 * Math.PI / targetBody.orbitalPeriod) * (gameTime + dt));
-                
-                const targetVx = nextX - relX;
-                const targetVy = nextY - relY;
-                const relSpeed = Math.hypot(ship.vx - targetVx, ship.vy - targetVy);
+                const targetVelocity = getBodyVelocity(targetBody.id, bodies, gameTime);
+                const relSpeed = Math.hypot(ship.vx - targetVelocity.vx, ship.vy - targetVelocity.vy);
 
                 const isClose = dist < ((targetBody.radius ?? 0) + 1.5e6); // 1,500 km
                 const matchedVelocity = relSpeed < 2000; // under 2000 m/s

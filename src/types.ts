@@ -234,7 +234,6 @@ export interface GameState {
   contracts: SpaceContract[];
   logs: MissionLog[];
   selectedBodyId: string | null;
-  selectedPortId: string | null;
   miningTargetId: string | null;
   isDocked: boolean;
   dockedBodyId: string | null;

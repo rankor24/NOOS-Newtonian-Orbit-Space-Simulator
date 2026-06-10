@@ -8,6 +8,7 @@ import { GameState, CelestialBody, OwnedShipRecord } from "../types";
 import { ShipyardCatalogEntry } from "../utils/shipManagement";
 import { RESOURCE_TYPES } from "../utils/gameData";
 import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName, getDisplayPortServices, getPortsForBody } from "../utils/worldText";
+import { getAbsoluteBodyPosition, getBodyVelocity } from "../utils/physics";
 import { ShoppingCart, Coins, ShieldAlert, Award, Inbox, HardDrive, Anchor, Star, Flame } from "lucide-react";
 
 interface MarketPanelProps {
@@ -41,14 +42,14 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
   dockedPortInventory,
   bodies,
 }) => {
-  const { ship, markets, isDocked, selectedBodyId, selectedPortId, dockedBodyId, dockedPortId, playerCredits, gameTime } = gameState;
+  const { ship, markets, isDocked, selectedBodyId, dockedBodyId, dockedPortId, playerCredits, gameTime } = gameState;
 
   // Selected object metrics
   const selectedBody = bodies.find((b) => b.id === selectedBodyId) || null;
   const dockedBody = bodies.find((b) => b.id === dockedBodyId) || null;
   const activeBody = isDocked ? dockedBody || selectedBody : selectedBody;
   const selectablePorts = activeBody ? getPortsForBody(activeBody) : [];
-  const activePortId = isDocked ? dockedPortId : selectedPortId;
+  const activePortId = isDocked ? dockedPortId : selectablePorts[0]?.id;
   const activePort = selectablePorts.find((port) => port.id === activePortId) || selectablePorts[0] || null;
   const isSelectedAsteroid = selectedBody?.type === "asteroid";
 
@@ -66,35 +67,14 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
 
   if (selectedBody) {
     // Distance
-    const targetBodyPos = { x: 0, y: 0 }; // recursive check inside physics
-    // Standard absolute physics calculation
-    const bodyPosRef = getAbsoluteBodyPositionRef(selectedBody.id, bodies, gameTime);
+    const bodyPosRef = getAbsoluteBodyPosition(selectedBody.id, bodies, gameTime);
     const dx = ship.x - bodyPosRef.x;
     const dy = ship.y - bodyPosRef.y;
     distanceToBodyValue = Math.hypot(dx, dy);
 
     // Speed Relative to selected orbit
-    let targetVx = 0;
-    let targetVy = 0;
-    if (selectedBody.parentId) {
-      const dt = 1.0;
-      const p1 = getAbsoluteBodyPositionRef(selectedBody.id, bodies, gameTime);
-      const p2 = getAbsoluteBodyPositionRef(selectedBody.id, bodies, gameTime + dt);
-      targetVx = p2.x - p1.x;
-      targetVy = p2.y - p1.y;
-    }
-    relativeSpeedValue = Math.hypot(ship.vx - targetVx, ship.vy - targetVy);
-  }
-
-  // Ref absolute body position copy helper locally to skip complex recursion imports
-  function getAbsoluteBodyPositionRef(bodyId: string, all: CelestialBody[], time: number): { x: number; y: number } {
-    const body = all.find((b) => b.id === bodyId);
-    if (!body) return { x: 0, y: 0 };
-    if (!body.parentId) return { x: 0, y: 0 };
-    const relX = body.semiMajorAxis * Math.cos(body.meanAnomalyAtEpoch + (2 * Math.PI / body.orbitalPeriod) * time);
-    const relY = body.semiMajorAxis * Math.sin(body.meanAnomalyAtEpoch + (2 * Math.PI / body.orbitalPeriod) * time);
-    const parentPos = getAbsoluteBodyPositionRef(body.parentId, all, time);
-    return { x: parentPos.x + relX, y: parentPos.y + relY };
+    const targetVelocity = getBodyVelocity(selectedBody.id, bodies, gameTime);
+    relativeSpeedValue = Math.hypot(ship.vx - targetVelocity.vx, ship.vy - targetVelocity.vy);
   }
 
   // Check docking requirements:

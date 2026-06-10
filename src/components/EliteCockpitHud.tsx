@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Activity,
   Anchor,
@@ -89,6 +89,22 @@ function DataRow({ label, value, tone = "" }: { label: string; value: React.Reac
       <strong className={tone}>{value}</strong>
     </div>
   );
+}
+
+function formatOrbitDistance(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "OPEN";
+  const abs = Math.abs(value);
+  if (abs >= AU * 0.1) return `${(value / AU).toFixed(2)} AU`;
+  if (abs >= 1e6) return `${Math.round(value / 1e6).toLocaleString()} Mm`;
+  return `${Math.round(value / 1000).toLocaleString()} km`;
+}
+
+function formatOrbitPeriod(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds)) return "OPEN";
+  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} d`;
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} h`;
+  if (seconds >= 60) return `${Math.round(seconds / 60)} m`;
+  return `${Math.round(seconds)} s`;
 }
 
 function StatusLamp({ label, active }: { label: string; active: boolean }) {
@@ -192,10 +208,13 @@ export function EliteCockpitHud({
 }: EliteCockpitHudProps) {
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({});
   const [modalTab, setModalTab] = useState<CockpitTab | null>(null);
+  const wasDockedRef = useRef(gameState.isDocked);
   const powerDistribution = gameState.ship.powerDistribution ?? DEFAULT_POWER_DISTRIBUTION;
   const speed = Math.hypot(gameState.ship.vx, gameState.ship.vy);
   const velocityAngle = speed > 1 ? Math.atan2(gameState.ship.vy, gameState.ship.vx) : null;
   const cargoUsed = Object.values(gameState.ship.cargo).reduce((sum, value) => sum + (value || 0), 0);
+  const shipMass = gameState.ship.dryMass + gameState.ship.fuelLevel;
+  const thrustAcceleration = gameState.ship.engineThrust / Math.max(1, shipMass);
   const throttle = gameState.ship.throttlePercent;
   const throttleTone = throttle > 0 ? "tone-hot" : throttle < 0 ? "tone-cyan" : "";
   const headingDeg = Math.round((((gameState.ship.heading * 180) / Math.PI) % 360 + 360) % 360);
@@ -208,6 +227,14 @@ export function EliteCockpitHud({
     setActiveTab(tab);
     setModalTab(tab);
   };
+
+  useEffect(() => {
+    if (gameState.isDocked && !wasDockedRef.current) {
+      setActiveTab("market");
+      setModalTab("market");
+    }
+    wasDockedRef.current = gameState.isDocked;
+  }, [gameState.isDocked, setActiveTab]);
 
   return (
     <div className={`elite-root elite-theme-${uiTheme}`}>
@@ -304,6 +331,12 @@ export function EliteCockpitHud({
               <>
                 <DataRow label="Altitude" value={`${Math.round(relativeOrbit.altitude / 1000).toLocaleString()} km`} />
                 <DataRow label="Rel Speed" value={`${Math.round(relativeOrbit.relSpeed).toLocaleString()} m/s`} />
+                <DataRow
+                  label="Pe / Ap"
+                  value={`${formatOrbitDistance(relativeOrbit.periapsisAltitude)} / ${formatOrbitDistance(relativeOrbit.apoapsisAltitude)}`}
+                  tone={relativeOrbit.periapsisAltitude < 0 ? "tone-hot" : "tone-cyan"}
+                />
+                <DataRow label="Period" value={formatOrbitPeriod(relativeOrbit.orbitPeriod)} />
               </>
             )}
             {selectedBody.hasMarket && !gameState.isDocked && (() => {
@@ -362,6 +395,8 @@ export function EliteCockpitHud({
         <DataRow label="Shield" value={`${shieldPercent}%`} />
         <DataRow label="Cargo" value={`${cargoUsed.toFixed(1)} / ${gameState.ship.cargoCapacity} t`} />
         <DataRow label="Fuel" value={`${Math.round(gameState.ship.fuelLevel).toLocaleString()} / ${gameState.ship.maxFuel.toLocaleString()} kg`} />
+        <DataRow label="Mass" value={`${Math.round(shipMass).toLocaleString()} kg`} />
+        <DataRow label="Accel" value={`${thrustAcceleration.toFixed(2)} m/s2`} />
       </HudPanel>
 
       <section className="elite-flight-console" aria-label="Flight controls">
@@ -480,7 +515,7 @@ export function EliteCockpitHud({
               <div className="elite-autopilot-grid">
                 <button
                   type="button"
-                  disabled={!selectedBody}
+                  disabled={!selectedBody || gameState.isDocked}
                   className={autopilotMode === "align-target" ? "is-active" : ""}
                   onClick={() => setAutopilotMode(autopilotMode === "align-target" ? "none" : "align-target")}
                   title="Lock heading to target bearing"
@@ -489,7 +524,7 @@ export function EliteCockpitHud({
                 </button>
                 <button
                   type="button"
-                  disabled={!selectedBody}
+                  disabled={!selectedBody || gameState.isDocked}
                   className={autopilotMode === "approach-target" ? "is-active" : ""}
                   onClick={() => setAutopilotMode(autopilotMode === "approach-target" ? "none" : "approach-target")}
                   title="Approach target safely with retro-braking assist"
@@ -498,7 +533,7 @@ export function EliteCockpitHud({
                 </button>
                 <button
                   type="button"
-                  disabled={!selectedBody}
+                  disabled={!selectedBody || gameState.isDocked}
                   className={autopilotMode === "match-speed" ? "is-active" : ""}
                   onClick={() => setAutopilotMode(autopilotMode === "match-speed" ? "none" : "match-speed")}
                   title="Match velocity with target body"
@@ -507,7 +542,7 @@ export function EliteCockpitHud({
                 </button>
                 <button
                   type="button"
-                  disabled={!selectedBody}
+                  disabled={!selectedBody || gameState.isDocked}
                   className={autopilotMode === "circularize" ? "is-active" : ""}
                   onClick={() => setAutopilotMode(autopilotMode === "circularize" ? "none" : "circularize")}
                   title="Circularize orbit around current body"

@@ -21,13 +21,13 @@ function makeShipFromModel(modelId: string): ShipState {
   const base = createStarterShip();
   switch (modelId) {
     case "ship_hauler":
-      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Hauler", manufacturer: "Zorgon Peterson", cargoCapacity: 12, cargoCapacityTons: 12, dryMass: 32000, engineThrust: 150000, maxFuel: 5000, fuelLevel: 5000 };
+      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Hauler", manufacturer: "Zorgon Peterson", cargoCapacity: 12, cargoCapacityTons: 12, dryMass: 32000, engineThrust: 2200000, maxFuel: 5000, fuelLevel: 5000 };
     case "ship_adder":
-      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Adder", manufacturer: "Zorgon Peterson", cargoCapacity: 8, cargoCapacityTons: 8, dryMass: 28000, engineThrust: 185000, maxFuel: 4500, fuelLevel: 4500, scannerRangeLy: 8 };
+      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Adder", manufacturer: "Zorgon Peterson", cargoCapacity: 8, cargoCapacityTons: 8, dryMass: 28000, engineThrust: 2800000, maxFuel: 4500, fuelLevel: 4500, scannerRangeLy: 8 };
     case "ship_soyuz":
-      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Soyuz-M Crew Ferry", manufacturer: "Soyuz Orbital Group", cargoCapacity: 6, cargoCapacityTons: 6, passengerCapacity: 4, passengerPodSlots: 1, dryMass: 30000, engineThrust: 160000, maxFuel: 5200, fuelLevel: 5200 };
+      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Soyuz-M Crew Ferry", manufacturer: "Soyuz Orbital Group", cargoCapacity: 6, cargoCapacityTons: 6, passengerCapacity: 4, passengerPodSlots: 1, dryMass: 30000, engineThrust: 2400000, maxFuel: 5200, fuelLevel: 5200 };
     case "ship_kaguya":
-      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Kaguya-class Orbital Transporter", manufacturer: "Hayabusa Heavy Industries", cargoCapacity: 18, cargoCapacityTons: 18, passengerCapacity: 2, passengerPodSlots: 1, dryMass: 36000, engineThrust: 195000, maxFuel: 6500, fuelLevel: 6500 };
+      return { ...base, id: `ship_${modelId}`, hullId: modelId, name: "Kaguya-class Orbital Transporter", manufacturer: "Hayabusa Heavy Industries", cargoCapacity: 18, cargoCapacityTons: 18, passengerCapacity: 2, passengerPodSlots: 1, dryMass: 36000, engineThrust: 2100000, maxFuel: 6500, fuelLevel: 6500 };
     default:
       return base;
   }

@@ -181,6 +181,21 @@ export function getAbsoluteBodyPosition(
   };
 }
 
+export function getBodyVelocity(
+  bodyId: string,
+  allBodies: CelestialBody[],
+  time: number,
+  sampleSeconds: number = 1
+): { vx: number; vy: number } {
+  const dt = Math.max(0.001, sampleSeconds);
+  const current = getAbsoluteBodyPosition(bodyId, allBodies, time);
+  const next = getAbsoluteBodyPosition(bodyId, allBodies, time + dt);
+  return {
+    vx: (next.x - current.x) / dt,
+    vy: (next.y - current.y) / dt,
+  };
+}
+
 /**
  * Calculate Sphere of Influence (SOI) radius for a planet orbiting a star.
  * SOI = a * (m_planet / m_star)^(2/5)
@@ -320,6 +335,9 @@ export interface OrbitMetrics {
   circularVelocity: number;
   semimajorAxis: number;
   eccentricity: number;
+  periapsisAltitude: number;
+  apoapsisAltitude: number | null;
+  orbitPeriod: number | null;
 }
 
 export function computeOrbitMetrics(
@@ -337,24 +355,13 @@ export function computeOrbitMetrics(
   const distance = Math.hypot(dx, dy);
 
   // Target true radius
-  const altitude = Math.max(0, distance - (targetBody.radius ?? 0));
+  const bodyRadius = targetBody.radius ?? 0;
+  const altitude = Math.max(0, distance - bodyRadius);
 
-  // Velocity relative to target body's instant Kepler velocity
-  let targetVx = 0;
-  let targetVy = 0;
+  const targetVelocity = getBodyVelocity(targetBody.id, bodies, time);
 
-  if (targetBody.parentId) {
-    // Numerically approximate velocity by looking slightly forward
-    // v = (r(t+dt) - r(t)) / dt
-    const dt = 1.0;
-    const posCurrent = posCache ? getCachedPosition(posCache, targetBody.id) : getAbsoluteBodyPosition(targetBody.id, bodies, time);
-    const posNext = getAbsoluteBodyPosition(targetBody.id, bodies, time + dt);
-    targetVx = posNext.x - posCurrent.x;
-    targetVy = posNext.y - posCurrent.y;
-  }
-
-  const relVx = ship.vx - targetVx;
-  const relVy = ship.vy - targetVy;
+  const relVx = ship.vx - targetVelocity.vx;
+  const relVy = ship.vy - targetVelocity.vy;
   const relSpeed = Math.hypot(relVx, relVy);
 
   // Escape velocity relative to active body: v = sqrt(2 * G * M / r)
@@ -368,16 +375,26 @@ export function computeOrbitMetrics(
   // Semi-major axis and eccentricity of relative orbit
   // Vis-viva: v^2 = G * M * (2/r - 1/a) => 1/a = 2/r - v^2/(G*M)
   const mu = G * trueMass;
-  const invA = 2.0 / distance - (relSpeed * relSpeed) / mu;
-  const semimajorAxis = 1.0 / invA;
+  const invA = mu > 0 ? 2.0 / distance - (relSpeed * relSpeed) / mu : 0;
+  const semimajorAxis = invA !== 0 ? 1.0 / invA : Infinity;
 
   // Specific Angular Momentum: h = r x v = rx * vy - ry * vx
   const h = dx * relVy - dy * relVx;
   // Specific orbital energy: epsilon = v^2 / 2 - mu / r
   const epsilon = (relSpeed * relSpeed) / 2.0 - mu / distance;
   // ccrentricity: e = sqrt(1 + 2 * epsilon * h^2 / mu^2)
-  let eccentricityVal = 1 + (2 * epsilon * h * h) / (mu * mu);
+  let eccentricityVal = mu > 0 ? 1 + (2 * epsilon * h * h) / (mu * mu) : 0;
   const eccentricity = eccentricityVal > 0 ? Math.sqrt(eccentricityVal) : 0;
+  const semiLatusRectum = mu > 0 ? (h * h) / mu : Infinity;
+  const periapsisRadius = eccentricity > 0
+    ? semiLatusRectum / (1 + eccentricity)
+    : semimajorAxis;
+  const apoapsisRadius = eccentricity < 1 && semimajorAxis > 0
+    ? semimajorAxis * (1 + eccentricity)
+    : null;
+  const orbitPeriod = eccentricity < 1 && semimajorAxis > 0 && mu > 0
+    ? 2 * Math.PI * Math.sqrt((semimajorAxis * semimajorAxis * semimajorAxis) / mu)
+    : null;
 
   return {
     altitude,
@@ -388,6 +405,9 @@ export function computeOrbitMetrics(
     circularVelocity,
     semimajorAxis,
     eccentricity,
+    periapsisAltitude: periapsisRadius - bodyRadius,
+    apoapsisAltitude: apoapsisRadius === null ? null : apoapsisRadius - bodyRadius,
+    orbitPeriod,
   };
 }
 
