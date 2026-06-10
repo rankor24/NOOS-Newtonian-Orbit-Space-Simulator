@@ -515,7 +515,10 @@ setApproachGuidanceReadout(null);
 let finalHeading = current.ship.heading;
 const steeringEnginePips = current.ship.powerDistribution?.engines ?? DEFAULT_POWER_DISTRIBUTION.engines;
 const hullTurnRate = ((current.ship.yawDegPerSec ?? current.ship.pitchDegPerSec ?? 16) * Math.PI) / 180;
-if (Math.abs(throttleCommand) > 0.001 && current.timeScale > 60) {
+if (dockingClearanceRef.current?.holdStartedAt != null && current.timeScale > 1) {
+// Docking control restricts time compression: the 10 s alignment hold must pass in real time.
+gameDt = realDt;
+} else if (Math.abs(throttleCommand) > 0.001 && current.timeScale > 60) {
 gameDt = realDt * 60;
 }
 const headingStep = Math.min(MAX_HEADING_STEP_PER_FRAME, hullTurnRate * (0.7 + steeringEnginePips / 100) * gameDt);

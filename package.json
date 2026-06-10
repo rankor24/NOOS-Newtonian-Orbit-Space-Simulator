@@ -10,6 +10,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:autopilot": "tsx src/utils/autopilot.test.ts",
+    "test:rails": "tsx scripts/verify-rails.ts",
     "build:hyg-subset": "python scripts/build_hyg_subset.py"
   },
   "dependencies": {
