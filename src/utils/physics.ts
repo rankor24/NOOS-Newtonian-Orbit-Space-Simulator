@@ -8,6 +8,21 @@ import { CelestialBody, ShipState } from "../types";
 const G = 6.6743e-11; // Gravitational Constant m^3 kg^-1 s^-2
 const G0 = 9.80665;
 const MIN_GRAVITY_DISTANCE = 1e4;
+const RESOURCE_MASS_KG_PER_TON: Record<string, number> = {
+  water: 1000,
+  fuel: 1000,
+  ore: 1000,
+  machinery: 1000,
+  luxury: 500,
+  luxuries: 500, // legacy save key
+  he3: 500,
+};
+
+export function getShipCargoMassKg(ship: Pick<ShipState, "cargo">): number {
+  return Object.entries(ship.cargo || {}).reduce((sum, [resourceId, tons]) => {
+    return sum + Math.max(0, tons || 0) * (RESOURCE_MASS_KG_PER_TON[resourceId] ?? 1000);
+  }, 0);
+}
 
 function addGravityFromPoint(
   accX: number,
@@ -342,7 +357,7 @@ export function integrateSpacecraft(
     let { accX, accY } = getSummedGravityAcceleration(x, y, bodies, currentSimTime, starMass, stepCache);
 
     // Add continuous thrust if operating thrusters
-    const totalMass = dryMass + fuelLevel;
+    const totalMass = dryMass + fuelLevel + getShipCargoMassKg(ship);
     if (thrustScale > 0 && fuelLevel > 0) {
       const requestedThrust = engineThrust * thrustScale;
       const safeIsp = Math.max(1, engineIsp);
@@ -657,22 +672,22 @@ export function getDockingSpecs(body: CelestialBody | null): { maxDistance: numb
   if (body.type === "station") {
     const isTether = body.name.toLowerCase().includes("tether") || body.stationName?.toLowerCase().includes("tether");
     return {
-      maxDistance: (body.radius ?? 0) + (isTether ? 250_000 : 50_000),
-      maxSpeed: 50,
+      maxDistance: (body.radius ?? 0) + (isTether ? 750_000 : 350_000),
+      maxSpeed: isTether ? 500 : 350,
     };
   }
 
   if (body.type === "planet") {
     return {
-      maxDistance: body.radius + 200_000,
-      maxSpeed: 100,
+      maxDistance: body.radius + 800_000,
+      maxSpeed: 600,
     };
   }
 
   // Moons or smaller asteroid bodies containing stations
   return {
-    maxDistance: body.radius + 200_000,
-    maxSpeed: 100,
+    maxDistance: body.radius + 400_000,
+    maxSpeed: 500,
   };
 }
 

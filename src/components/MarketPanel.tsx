@@ -8,7 +8,7 @@ import { GameState, CelestialBody, OwnedShipRecord } from "../types";
 import { ShipyardCatalogEntry } from "../utils/shipManagement";
 import { RESOURCE_TYPES } from "../utils/gameData";
 import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName, getDisplayPortServices, getPortsForBody } from "../utils/worldText";
-import { getAbsoluteBodyPosition, getBodyVelocity } from "../utils/physics";
+import { getAbsoluteBodyPosition, getBodyVelocity, getDockingSpecs } from "../utils/physics";
 import { ShoppingCart, Coins, ShieldAlert, Award, Inbox, HardDrive, Anchor, Star, Flame } from "lucide-react";
 
 interface MarketPanelProps {
@@ -77,12 +77,15 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
     relativeSpeedValue = Math.hypot(ship.vx - targetVelocity.vx, ship.vy - targetVelocity.vy);
   }
 
-  // Check docking requirements:
-  // Distance < radius + 1,200,000m (1,200 km) AND relative velocity < 600m/s
+  const dockingSpecs = getDockingSpecs(selectedBody);
+  const dockingAltitudeKm = selectedBody ? Math.round(Math.max(0, distanceToBodyValue - (selectedBody.radius ?? 0)) / 1000) : Infinity;
+  const dockingMaxAltitudeKm = selectedBody ? Math.round(Math.max(0, dockingSpecs.maxDistance - (selectedBody.radius ?? 0)) / 1000) : 0;
+
+  // Check docking requirements against the same approach envelope used by App.tsx.
   const canDock = selectedBody &&
                   selectedBody.hasMarket &&
-                  distanceToBodyValue < ((selectedBody.radius ?? 0) + 1.2e6) &&
-                  relativeSpeedValue < 600;
+                  distanceToBodyValue < dockingSpecs.maxDistance &&
+                  relativeSpeedValue < dockingSpecs.maxSpeed;
 
   // Mines can activate if within 500 km of asteroids or unpopulated moons
   const canMine = selectedBody &&
@@ -295,7 +298,7 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
                   </div>
                   <div className="text-left pl-2">
                     <span className="text-stone-500 block text-[10px] uppercase">R-Velocity</span>
-                    <span className={`text-sm font-bold ${relativeSpeedValue < 600 ? "text-emerald-400" : "text-amber-500"}`}>
+                    <span className={`text-sm font-bold ${relativeSpeedValue < dockingSpecs.maxSpeed ? "text-emerald-400" : "text-amber-500"}`}>
                       {Math.round(relativeSpeedValue).toLocaleString()} m/s
                     </span>
                   </div>
@@ -318,10 +321,10 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
                           <ShieldAlert className="w-4 h-4 text-amber-400" /> Docking Criteria Not Met
                         </div>
                         <ul className="list-disc list-inside text-stone-400 text-[11px] space-y-1">
-                          <li>Must be inside docking bubble (under 1,200 km altitude)</li>
-                          <li>Must match velocity vectors close to target (relative speed &lt; 600 m/s)</li>
+                          <li>Must be inside docking bubble (under {dockingMaxAltitudeKm.toLocaleString()} km altitude)</li>
+                          <li>Must slow relative speed below {dockingSpecs.maxSpeed.toLocaleString()} m/s</li>
                         </ul>
-                        <p className="text-[10px] text-stone-500 pt-1 font-sans italic">Hint: Tap 'Zero Rel Velocity' on your autopilot helper, and zoom in close.</p>
+                        <p className="text-[10px] text-stone-500 pt-1 font-sans italic">Current: {Number.isFinite(dockingAltitudeKm) ? dockingAltitudeKm.toLocaleString() : "---"} km, {Number.isFinite(relativeSpeedValue) ? Math.round(relativeSpeedValue).toLocaleString() : "---"} m/s.</p>
                       </div>
                     )}
                   </div>

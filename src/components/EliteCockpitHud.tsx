@@ -21,7 +21,7 @@ import {
   Zap,
 } from "lucide-react";
 import { CelestialBody, GameState, MissionLog, StarData } from "../types";
-import { OrbitMetrics, getDockingSpecs } from "../utils/physics";
+import { OrbitMetrics, getDockingSpecs, getShipCargoMassKg } from "../utils/physics";
 import type { ApproachGuidance } from "../utils/spaceFlightAutopilot";
 import { formatGameTime } from "../utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "../data/ships";
@@ -32,6 +32,7 @@ type CockpitTab = "nav" | "market" | "upgrades" | "contracts";
 type MapMode = "star" | "ship" | "target";
 type UiTheme = "amber" | "blue" | "green" | "red";
 type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target";
+const DOCKING_HOLD_SECONDS = 4;
 
 interface EliteCockpitHudProps {
   gameState: GameState;
@@ -245,8 +246,9 @@ function EliteCockpitHudInner({
   const speed = Math.hypot(gameState.ship.vx, gameState.ship.vy);
   const velocityAngle = speed > 1 ? Math.atan2(gameState.ship.vy, gameState.ship.vx) : null;
   const cargoUsed = Object.values(gameState.ship.cargo).reduce((sum, value) => sum + (value || 0), 0);
-  const shipMass = gameState.ship.dryMass + gameState.ship.fuelLevel;
-  const dryMass = Math.max(1, gameState.ship.dryMass);
+  const cargoMass = getShipCargoMassKg(gameState.ship);
+  const shipMass = gameState.ship.dryMass + gameState.ship.fuelLevel + cargoMass;
+  const dryMass = Math.max(1, gameState.ship.dryMass + cargoMass);
   const thrustAcceleration = gameState.ship.engineThrust / Math.max(1, shipMass);
   const deltaV = gameState.ship.engineIsp * 9.80665 * Math.log(shipMass / dryMass);
   const throttle = gameState.ship.throttlePercent;
@@ -342,7 +344,7 @@ function EliteCockpitHudInner({
             label="Warp Limit"
             value={`x${warpStatus.effective.toLocaleString()} — ${
               warpStatus.reason === "burn" ? "ENGINE BURN"
-                : warpStatus.reason === "dock-hold" ? "DOCKING HOLD"
+                : warpStatus.reason === "dock-hold" ? "DOCKING CAPTURE"
                 : warpStatus.reason === "proximity" ? "PROXIMITY"
                 : "AP GUARD"
             }`}
@@ -473,7 +475,7 @@ function EliteCockpitHudInner({
                   />
                   <DataRow
                     label="Clearance"
-                    value={dockingClearance?.bodyId === selectedBody.id ? `HOLD ${Math.min(10, Math.floor(holdSeconds))}/10s` : "REQUEST"}
+                    value={dockingClearance?.bodyId === selectedBody.id ? `CAPTURE ${Math.min(DOCKING_HOLD_SECONDS, Math.floor(holdSeconds))}/${DOCKING_HOLD_SECONDS}s` : "REQUEST"}
                     tone={dockingClearance?.bodyId === selectedBody.id ? "tone-cyan" : "text-zinc-500"}
                   />
                 </>
@@ -483,7 +485,7 @@ function EliteCockpitHudInner({
               <button
                 disabled={!canDock || gameState.isDocked}
                 onClick={onDock}
-                title="Request docking when range, speed, and alignment conditions are satisfied"
+                title="Request docking when range and relative speed are inside the approach envelope"
               >
                 DOCK
               </button>

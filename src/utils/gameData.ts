@@ -27,6 +27,18 @@ export const RESOURCE_TYPES = [
   { id: "he3", name: "Helium-3 Gas", basePrice: 3800, mass: 500, desc: "Rare energy isotope mined from gas giant atmospheres." }
 ];
 
+export function normalizeCargoManifest(cargo: ShipState["cargo"] | undefined): ShipState["cargo"] {
+  const normalized = { ...(cargo || {}) };
+  if (normalized.luxuries) {
+    normalized.luxury = (normalized.luxury || 0) + normalized.luxuries;
+    delete normalized.luxuries;
+  }
+  for (const resource of RESOURCE_TYPES) {
+    normalized[resource.id] = Math.max(0, normalized[resource.id] || 0);
+  }
+  return normalized;
+}
+
 export const UPGRADES: ShipUpgrade[] = [
   {
     id: "tank_i",
@@ -319,7 +331,7 @@ export function createStarterShip(): ShipState {
     passengerCapacity: 0,
     passengerCount: 0,
     passengerPodSlots: 0,
-    cargo: { water: 0, fuel: 0, ore: 0, machinery: 0, luxuries: 0, he3: 0 },
+    cargo: normalizeCargoManifest({ water: 0, fuel: 0, ore: 0, machinery: 0, luxury: 0, he3: 0 }),
     miningPower: 1.0,
     warpCapacity: false,
     maxWarpRange: 0,

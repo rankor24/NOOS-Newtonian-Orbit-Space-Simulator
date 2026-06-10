@@ -1,7 +1,7 @@
 import { AU, STARS, getOrCreatePlayableStar } from "../../data/stars";
 import { SIDEWINDER_STARTER_PROFILE, DEFAULT_POWER_DISTRIBUTION } from "../../data/ships";
 import { GameState, MissionLog, ShipState } from "../../types";
-import { createDefaultPlayerProfile, createInitialState } from "../../utils/gameData";
+import { createDefaultPlayerProfile, createInitialState, normalizeCargoManifest } from "../../utils/gameData";
 import { getAbsoluteBodyPosition, getBodyVelocity } from "../../utils/physics";
 
 export const normalizePowerDistribution = (
@@ -39,20 +39,20 @@ export const createCustomInitialState = (
   if (profession === "merchant") {
     startingCredits = 3500;
     tradeXp = 500;
-    ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 1, luxuries: 2, he3: 0 };
+    ship.cargo = normalizeCargoManifest({ water: 0, fuel: 0, ore: 0, machinery: 1, luxury: 2, he3: 0 });
   } else if (profession === "miner") {
     startingCredits = 1500;
     miningXp = 500;
     ship.miningPower = 4.0;
     ship.installedUpgradeIds = ["drill_i"];
-    ship.cargo = { water: 2, fuel: 0, ore: 1, machinery: 0, luxuries: 0, he3: 0 };
+    ship.cargo = normalizeCargoManifest({ water: 2, fuel: 0, ore: 1, machinery: 0, luxury: 0, he3: 0 });
   } else if (profession === "explorer") {
     startingCredits = 1200;
     explorationXp = 500;
     ship.scannerRangeLy = 12;
     ship.systemScannerRange = 8 * AU;
     ship.installedUpgradeIds = ["sensor_i"];
-    ship.cargo = { water: 0, fuel: 0, ore: 0, machinery: 0, luxuries: 0, he3: 1 };
+    ship.cargo = normalizeCargoManifest({ water: 0, fuel: 0, ore: 0, machinery: 0, luxury: 0, he3: 1 });
   }
 
   let startBodyId = tempState.selectedBodyId || "station_earth_low";
@@ -144,6 +144,7 @@ export const migrateLoadedState = (parsed: any): GameState => {
     fuelLevel: (parsedState?.ship?.fuelLevel ?? 0) > 0 ? parsedState.ship.fuelLevel : fallback.ship.fuelLevel,
     battery: (parsedState?.ship?.battery ?? 0) > 0 ? parsedState.ship.battery : fallback.ship.battery,
     powerDistribution: normalizePowerDistribution(parsedState?.ship?.powerDistribution),
+    cargo: normalizeCargoManifest(parsedState?.ship?.cargo ?? fallback.ship.cargo),
     cargoCapacityTons: parsedState?.ship?.cargoCapacityTons ?? parsedState?.ship?.cargoCapacity ?? fallback.ship.cargoCapacityTons,
     passengerCapacity: parsedState?.ship?.passengerCapacity ?? 0,
     passengerCount: parsedState?.ship?.passengerCount ?? 0,
@@ -152,10 +153,16 @@ export const migrateLoadedState = (parsed: any): GameState => {
   };
   const activeShipId = parsedState?.activeShipId || ship.id || fallback.activeShipId;
   const ownedShips = Array.isArray(parsedState?.ownedShips) && parsedState.ownedShips.length > 0
-    ? parsedState.ownedShips.map((entry: any) => ({
-        ...entry,
-        ship: entry?.id === activeShipId ? ship : { ...ship, ...(entry?.ship || {}) },
-      }))
+    ? parsedState.ownedShips.map((entry: any) => {
+        const entryShip = entry?.id === activeShipId ? ship : { ...ship, ...(entry?.ship || {}) };
+        return {
+          ...entry,
+          ship: {
+            ...entryShip,
+            cargo: normalizeCargoManifest(entryShip.cargo),
+          },
+        };
+      })
     : [{ id: activeShipId, hullId: ship.hullId || "starter_sidewinder_ship", name: ship.name, ship, homePortId: parsedState?.dockedPortId || "base_earth_1" }];
 
   return {

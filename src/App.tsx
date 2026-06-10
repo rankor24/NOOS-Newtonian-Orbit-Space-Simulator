@@ -8,10 +8,10 @@ import { StarSystemCanvas } from "./components/StarSystemCanvas";
 import { EliteCockpitHud } from "./components/EliteCockpitHud";
 import { STARS, AU, getOrCreatePlayableStar } from "./data/stars";
 import { MainMenu } from "./components/MainMenu";
-import { createInitialState, formatGameTime, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
+import { createInitialState, formatGameTime, normalizeCargoManifest, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION } from "./data/ships";
 import { GameState, CelestialBody, SpaceContract } from "./types";
-import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, getSphereOfInfluence, propagateKeplerianCoast } from "./utils/physics";
+import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, getShipCargoMassKg, getSphereOfInfluence, propagateKeplerianCoast } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
@@ -44,10 +44,7 @@ Activity,
 History
 } from "lucide-react";
 
-const DOCKING_RANGE_METERS = 1.2e6;
-const DOCKING_MAX_REL_SPEED = 600;
-const DOCKING_HOLD_SECONDS = 10;
-const DOCKING_ALIGNMENT_TOLERANCE = 0.22;
+const DOCKING_HOLD_SECONDS = 4;
 const MAX_HEADING_STEP_PER_FRAME = 0.35; // cap game-time rotation so high warp cannot snap headings instantly
 const METERS_PER_LIGHT_YEAR = 9.4607e15;
 const SYSTEM_ESCAPE_RADIUS_METERS = 50 * AU;
@@ -72,7 +69,7 @@ const segmentDistance = (
   return Math.hypot(px - (ax + abx * t), py - (ay + aby * t));
 };
 
-const getDockingAlignmentError = (
+const getDockingApproachHeading = (
   ship: GameState["ship"],
   body: CelestialBody,
   bodyPos: { x: number; y: number },
@@ -89,8 +86,14 @@ const getDockingAlignmentError = (
   const relVy = ship.vy - bodyVelocity.vy;
   const tangentialSpeed = relVx * tangentX + relVy * tangentY;
   const orbitSign = Math.abs(tangentialSpeed) > 1 ? Math.sign(tangentialSpeed) : 1;
-  const airlockHeading = Math.atan2(tangentY * orbitSign, tangentX * orbitSign);
-  return Math.abs(angleDelta(airlockHeading, ship.heading));
+  return Math.atan2(tangentY * orbitSign, tangentX * orbitSign);
+};
+
+const getDockingParkingRadius = (body: CelestialBody) => {
+  const bodyRadius = body.radius ?? 0;
+  if (body.type === "station") return bodyRadius + Math.max(4_000, bodyRadius * 2);
+  if (body.type === "planet") return bodyRadius + 50_000;
+  return bodyRadius + 20_000;
 };
 
 export default function App() {
@@ -241,8 +244,6 @@ const hudDerived = useMemo(() => {
   );
   return {
     selectedBody,
-    selectedBodyPosition,
-    selectedBodyVelocity,
     selectedBodyPorts,
     dockingDistance,
     dockingRelativeSpeed,
@@ -254,8 +255,6 @@ const hudDerived = useMemo(() => {
 }, [hudState, systemBodies, activeStar]);
 const {
   selectedBody,
-  selectedBodyPosition,
-  selectedBodyVelocity,
   selectedBodyPorts,
   dockingDistance,
   dockingRelativeSpeed,
@@ -323,6 +322,11 @@ vx: 0,
 vy: 18000,
 throttlePercent: 0,
 },
+playerProfile: awardCareerXp({
+...prev.playerProfile,
+totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt,
+stats: { ...prev.playerProfile.stats, starsVisited: prev.playerProfile.stats.starsVisited + 1 },
+}, "exploration", 250),
 }));
 addConsoleLog(`Navigation: Entered ${arrivalStar.name} local frame. System bodies resolved from star database.`, "success");
 } else {
@@ -331,6 +335,7 @@ setGameState((prev) => ({
 gameTime: current.gameTime + gameDt,
 activeStarId: current.interstellar?.originStarId ?? prev.activeStarId,
 interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy: nextY } : null,
+playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt },
 }));
 }
 
@@ -346,7 +351,7 @@ interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy:
         const offsetX = current.ship.x - dockPos.x;
         const offsetY = current.ship.y - dockPos.y;
         const offsetLength = Math.hypot(offsetX, offsetY);
-        const parkingRadius = (dockBody.radius ?? 0) + 1000;
+        const parkingRadius = getDockingParkingRadius(dockBody);
         const ux = offsetLength > 1 ? offsetX / offsetLength : 1;
         const uy = offsetLength > 1 ? offsetY / offsetLength : 0;
 
@@ -358,6 +363,7 @@ interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy:
           ...prev,
           gameTime: current.gameTime + gameDt,
           miningTargetId: null,
+          playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt },
           ship: {
             ...prev.ship,
             x: dockPos.x + ux * parkingRadius,
@@ -492,7 +498,7 @@ targetHeading = autopilotRef.current === "hold-radial-out" ? radialHeading : rad
 } else if (autopilotRef.current === "goto-target") {
 if (current.selectedBodyId) {
 const bodyRadius = activeTargetBody.radius ?? 0;
-const shipMass = current.ship.dryMass + current.ship.fuelLevel;
+const shipMass = current.ship.dryMass + current.ship.fuelLevel + getShipCargoMassKg(current.ship);
 const maxAccel = current.ship.engineThrust / shipMass;
 const targetMass = activeTargetBody.type === "star"
 ? (activeTargetBody.mass ?? 0) * 1.989e30
@@ -534,7 +540,7 @@ addConsoleLog("Autopilot: Go-to-body aborted (no active target selected).", "war
 // APPR: Newtonian automatic approach and docking deceleration assist!
 if (current.selectedBodyId) {
 const bodyRadius = activeTargetBody.radius ?? 0;
-const shipMass = current.ship.dryMass + current.ship.fuelLevel;
+const shipMass = current.ship.dryMass + current.ship.fuelLevel + getShipCargoMassKg(current.ship);
 const maxDecel = current.ship.engineThrust / shipMass;
 const targetMass = activeTargetBody.type === "star"
 ? (activeTargetBody.mass ?? 0) * 1.989e30
@@ -549,7 +555,7 @@ relVx,
 relVy,
 maxAcceleration: maxDecel,
 arrivalDistance: activeSpecs.maxDistance * 0.9,
-arrivalSpeed: Math.min(25, activeSpecs.maxSpeed * 0.1),
+arrivalSpeed: Math.max(50, activeSpecs.maxSpeed * 0.35),
 safetyDistance: 400000,
 maxCruiseClosingSpeed: 4500,
 stationApproach: activeTargetBody.hasMarket,
@@ -736,6 +742,7 @@ miningTargetId: null,
 isDocked: false,
 dockedBodyId: null,
 gameTime: current.gameTime + gameDt,
+playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt },
 ship: { ...updatedShip, throttlePercent: 0 },
 }));
       addConsoleLog(targetStar
@@ -757,18 +764,42 @@ ship: { ...updatedShip, throttlePercent: 0 },
         const dockSpecs = getDockingSpecs(dockBody);
         const distance = Math.hypot(updatedShip.x - dockPos.x, updatedShip.y - dockPos.y);
         const relSpeed = Math.hypot(updatedShip.vx - dockVelocity.vx, updatedShip.vy - dockVelocity.vy);
-        const alignmentError = getDockingAlignmentError(updatedShip, dockBody, dockPos, dockVelocity);
-        const insideEnvelope = distance < dockSpecs.maxDistance && relSpeed < dockSpecs.maxSpeed;
-        const aligned = alignmentError <= DOCKING_ALIGNMENT_TOLERANCE;
+        const captureLeashDistance = dockSpecs.maxDistance * 1.6;
+        const captureLeashSpeed = Math.max(dockSpecs.maxSpeed * 2.5, dockSpecs.maxSpeed + 250);
+        const insideCaptureLeash = distance < captureLeashDistance && relSpeed < captureLeashSpeed;
 
-        if (!insideEnvelope || !aligned) {
+        if (!insideCaptureLeash) {
           if (activeClearance.holdStartedAt !== null) {
-            setDockingClearance({ ...activeClearance, holdStartedAt: null });
-            addConsoleLog(`Docking control: hold reset at ${dockBody.stationName || dockBody.name}. Maintain envelope and alignment.`, "warning");
+            setDockingClearance(null);
+            addConsoleLog(`Docking control: capture aborted at ${dockBody.stationName || dockBody.name}. Re-enter the docking approach zone.`, "warning");
           }
         } else if (activeClearance.holdStartedAt === null) {
           setDockingClearance({ ...activeClearance, holdStartedAt: current.gameTime });
-        } else if (current.gameTime - activeClearance.holdStartedAt >= DOCKING_HOLD_SECONDS) {
+        } else {
+          const parkingRadius = getDockingParkingRadius(dockBody);
+          const offsetX = updatedShip.x - dockPos.x;
+          const offsetY = updatedShip.y - dockPos.y;
+          const offsetLength = Math.hypot(offsetX, offsetY);
+          const ux = offsetLength > 1 ? offsetX / offsetLength : Math.cos(updatedShip.heading);
+          const uy = offsetLength > 1 ? offsetY / offsetLength : Math.sin(updatedShip.heading);
+          const parkingX = dockPos.x + ux * parkingRadius;
+          const parkingY = dockPos.y + uy * parkingRadius;
+          const positionBlend = clamp(gameDt / 1.8, 0, 0.45);
+          const velocityBlend = clamp(gameDt / 0.8, 0, 0.65);
+          const approachHeading = getDockingApproachHeading(updatedShip, dockBody, dockPos, dockVelocity);
+          updatedShip = {
+            ...updatedShip,
+            x: updatedShip.x + (parkingX - updatedShip.x) * positionBlend,
+            y: updatedShip.y + (parkingY - updatedShip.y) * positionBlend,
+            vx: updatedShip.vx + (dockVelocity.vx - updatedShip.vx) * velocityBlend,
+            vy: updatedShip.vy + (dockVelocity.vy - updatedShip.vy) * velocityBlend,
+            heading: approachHeading,
+            throttlePercent: 0,
+          };
+          throttleCommand = 0;
+          setIsThrusting(false);
+
+          if (current.gameTime - activeClearance.holdStartedAt >= DOCKING_HOLD_SECONDS) {
           setAutopilotMode("none");
           setIsThrusting(false);
           setDockingClearance(null);
@@ -779,8 +810,15 @@ ship: { ...updatedShip, throttlePercent: 0 },
             dockedBodyId: dockBody.id,
             dockedPortId: dockPort.id,
             miningTargetId: null,
+            playerProfile: {
+              ...prev.playerProfile,
+              totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt,
+              stats: { ...prev.playerProfile.stats, dockingCount: prev.playerProfile.stats.dockingCount + 1 },
+            },
             ship: {
               ...updatedShip,
+              x: parkingX,
+              y: parkingY,
               vx: dockVelocity.vx,
               vy: dockVelocity.vy,
               throttlePercent: 0,
@@ -790,6 +828,7 @@ ship: { ...updatedShip, throttlePercent: 0 },
           setActiveTab("market");
           frameId = requestAnimationFrame(tick);
           return;
+          }
         }
       }
     }
@@ -798,6 +837,7 @@ ship: { ...updatedShip, throttlePercent: 0 },
     let appendMarkets = { ...current.markets };
     let logsList = [...current.logs];
     let creditsVal = current.playerCredits;
+    let playerProfileVal = current.playerProfile;
 
     if (current.miningTargetId && current.miningTargetId === current.selectedBodyId) {
       // Mine continuous tick
@@ -827,12 +867,23 @@ Object.keys(updatedCargo).forEach((k) => finalCargoMass += updatedCargo[k] || 0)
 if (finalCargoMass >= updatedShip.cargoCapacity) {
 // Crop excess
 const overage = finalCargoMass - updatedShip.cargoCapacity;
+const minedTons = Math.max(0, harvestRate - overage);
 updatedCargo[resType] = Math.max(0, updatedCargo[resType] - overage);
 updatedShip.cargo = updatedCargo;
+if (minedTons > 0) {
+playerProfileVal = awardCareerXp({
+...playerProfileVal,
+stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined + minedTons },
+}, "mining", Math.max(1, Math.round(minedTons * 20)));
+}
 setGameState((g) => ({ ...g, miningTargetId: null }));
 addConsoleLog("Drill Computer: Cargo inventory reached max tonnage capacity. Drills disengaged.", "warning");
 } else {
 updatedShip.cargo = updatedCargo;
+playerProfileVal = awardCareerXp({
+...playerProfileVal,
+stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined + harvestRate },
+}, "mining", Math.max(1, Math.round(harvestRate * 20)));
 }
 } else {
 setGameState((g) => ({ ...g, miningTargetId: null }));
@@ -849,6 +900,8 @@ addConsoleLog("Drill Computer: Signal lost. Mining lasers disengaged (out of ran
 // Check proximity with every planet/moon/star. If inside body radius, ship crashes!
 let crashDetected = false;
 let crashedBodyName = "";
+let crashDockBodyId: string | null = null;
+let crashDockPortId: string | null = null;
 const railImpactMetrics = railCoastShip
 ? computeOrbitMetrics(current.ship, railCoastReferenceBody, systemBodiesRef.current, current.gameTime, posCache)
 : null;
@@ -884,22 +937,49 @@ break;
 }
 
 if (crashDetected) {
-// Dynamic reset of spacecraft inside orbit of Earth or nearest habitable station
+const rescue = systemBodiesRef.current
+.map((body) => {
+const port = pickPortForBody(body, "repair") || pickPortForBody(body, "refuel") || pickPortForBody(body);
+const bodyPos = posCache.get(body.id) || getAbsoluteBodyPosition(body.id, systemBodiesRef.current, current.gameTime);
+return port ? { body, port, bodyPos, distance: Math.hypot(updatedShip.x - bodyPos.x, updatedShip.y - bodyPos.y) } : null;
+})
+.filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+.sort((a, b) => a.distance - b.distance)[0] || null;
+
+if (rescue) {
+const bodyVelocity = getBodyVelocity(rescue.body.id, systemBodiesRef.current, current.gameTime);
+const parentPos = rescue.body.parentId
+? getAbsoluteBodyPosition(rescue.body.parentId, systemBodiesRef.current, current.gameTime)
+: { x: 0, y: 0 };
+const awayX = rescue.bodyPos.x - parentPos.x;
+const awayY = rescue.bodyPos.y - parentPos.y;
+const awayLength = Math.hypot(awayX, awayY);
+const ux = awayLength > 1 ? awayX / awayLength : 1;
+const uy = awayLength > 1 ? awayY / awayLength : 0;
+const parkingRadius = getDockingParkingRadius(rescue.body);
+updatedShip.x = rescue.bodyPos.x + ux * parkingRadius;
+updatedShip.y = rescue.bodyPos.y + uy * parkingRadius;
+updatedShip.vx = bodyVelocity.vx;
+updatedShip.vy = bodyVelocity.vy;
+updatedShip.heading = Math.atan2(-uy, -ux);
+crashDockBodyId = rescue.body.id;
+crashDockPortId = rescue.port.id;
+} else {
 const resetPos = 1.0 * AU + 2.5e7;
 updatedShip.x = resetPos;
 updatedShip.y = 0;
 updatedShip.vx = 0;
 updatedShip.vy = 29780 + 1500;
+}
 updatedShip.fuelLevel = Math.max(1000, updatedShip.fuelLevel);
 updatedShip.throttlePercent = 0;
-updatedShip.cargo = { water: 0, fuel: 0, ore: 0, machinery: 0, luxuries: 0, he3: 0 };
+updatedShip.cargo = normalizeCargoManifest({ water: 0, fuel: 0, ore: 0, machinery: 0, luxury: 0, he3: 0 });
 creditsVal = Math.max(500, creditsVal - 1000); // crash penalty
 
 setIsThrusting(false);
 setAutopilotMode("none");
-setGameState((g) => ({ ...g, miningTargetId: null }));
 
-addConsoleLog(`ðŸ’¥ CRUNCH! Spaceship breached boundary layer around ${crashedBodyName}. Space fleet pulled distress frame. Chassis refitted at Earth for 1,000Â¢ liability fee.`, "warning");
+addConsoleLog(`CRUNCH! Spaceship breached boundary layer around ${crashedBodyName}. Rescue crews refitted the hull at ${rescue?.port.name || activeStarRef.current.name} for 1,000 cr.`, "warning");
 }
 
 // Refresh dynamic markets slowly over time to simulate a trade economy (every 1 game day)
@@ -911,6 +991,14 @@ setGameState((prev) => ({
 gameTime: updatedTimeValue,
 ship: updatedShip,
 playerCredits: creditsVal,
+playerProfile: { ...playerProfileVal, totalPlayTimeSec: playerProfileVal.totalPlayTimeSec + realDt },
+...(crashDetected ? {
+selectedBodyId: crashDockBodyId,
+miningTargetId: null,
+isDocked: !!crashDockBodyId,
+dockedBodyId: crashDockBodyId,
+dockedPortId: crashDockPortId,
+} : {}),
 }));
 
 frameId = requestAnimationFrame(tick);
@@ -1052,14 +1140,8 @@ addConsoleLog(`Docking denied by ${selectedBody.stationName || selectedBody.name
 return;
 }
 
-const bodyPos = selectedBodyPosition || getAbsoluteBodyPosition(selectedBody.id, systemBodiesRef.current, gameState.gameTime);
-const alignmentError = getDockingAlignmentError(gameState.ship, selectedBody, bodyPos, selectedBodyVelocity);
-if (alignmentError > DOCKING_ALIGNMENT_TOLERANCE) {
-addConsoleLog(`Docking clearance pending at ${selectedBody.stationName || selectedBody.name}: align with approach corridor (${Math.round(alignmentError * 180 / Math.PI)}Â° error).`, "warning");
-}
-
 setDockingClearance({ bodyId: selectedBody.id, portId: dockingPort.id, holdStartedAt: null });
-addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName || selectedBody.name}. Hold inside approach envelope for ${DOCKING_HOLD_SECONDS}s while aligned.`, "info");
+addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName || selectedBody.name}. Station capture will match local frame in ${DOCKING_HOLD_SECONDS}s.`, "info");
 };
 
 const handleUndockActivate = () => {
@@ -1249,10 +1331,15 @@ activeStarId: starId,
 selectedBodyId: dest.planets[0]?.id || null, // lock first planet of new star
 isDocked: false,
 dockedBodyId: null,
+dockedPortId: null,
 markets: {
 ...prev.markets,
 ...destinationMarkets,
 },
+playerProfile: awardCareerXp({
+...prev.playerProfile,
+stats: { ...prev.playerProfile.stats, starsVisited: prev.playerProfile.stats.starsVisited + 1 },
+}, "exploration", 250),
 ship: {
 ...prev.ship,
 x: highOrbitPos,
