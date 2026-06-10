@@ -116,6 +116,8 @@ const [mapMode, setMapMode] = useState<"star" | "ship" | "target">("star");
 const [isThrusting, setIsThrusting] = useState<boolean>(false);
 // Written every tick by the autopilot; the HUD reads it via the 10 Hz snapshot below.
 const approachGuidanceRef = useRef<ApproachGuidance | null>(null);
+// Effective warp actually applied this tick and why it was limited, for the HUD readout.
+const warpStatusRef = useRef<{ effective: number; reason: "dock-hold" | "burn" | "ap-guard" | null }>({ effective: 1, reason: null });
 const [dockingClearance, setDockingClearance] = useState<{ bodyId: string; portId: string; holdStartedAt: number | null } | null>(null);
 const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 
@@ -151,10 +153,14 @@ const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: fal
 
 // The DOM cockpit re-renders from this 10 Hz snapshot instead of every animation frame;
 // only the canvas map needs per-frame data. Text readouts at 10 Hz are indistinguishable.
-const [hudSnapshot, setHudSnapshot] = useState<{ state: GameState; guidance: ApproachGuidance | null }>(() => ({ state: gameState, guidance: null }));
+const [hudSnapshot, setHudSnapshot] = useState<{
+  state: GameState;
+  guidance: ApproachGuidance | null;
+  warp: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | null };
+}>(() => ({ state: gameState, guidance: null, warp: { effective: 1, reason: null } }));
 useEffect(() => {
   const id = setInterval(() => {
-    setHudSnapshot({ state: stateRef.current, guidance: approachGuidanceRef.current });
+    setHudSnapshot({ state: stateRef.current, guidance: approachGuidanceRef.current, warp: warpStatusRef.current });
   }, 100);
   return () => clearInterval(id);
 }, []);
@@ -580,18 +586,23 @@ approachGuidanceRef.current = null;
 let finalHeading = current.ship.heading;
 const steeringEnginePips = current.ship.powerDistribution?.engines ?? DEFAULT_POWER_DISTRIBUTION.engines;
 const hullTurnRate = ((current.ship.yawDegPerSec ?? current.ship.pitchDegPerSec ?? 16) * Math.PI) / 180;
+let warpLimitReason: "dock-hold" | "burn" | "ap-guard" | null = null;
 if (dockingClearanceRef.current?.holdStartedAt != null && current.timeScale > 1) {
 // Docking control restricts time compression: the 10 s alignment hold must pass in real time.
 gameDt = realDt;
-} else if (Math.abs(throttleCommand) > 0.001 && current.timeScale > 600) {
-// Burns warp-clamp to x600: high-delta-v transfer legs stay seconds of real time
-// while the integrator keeps enough substeps for a stable burn arc.
+warpLimitReason = "dock-hold";
+} else if (fuelSimRef.current && Math.abs(throttleCommand) > 0.001 && current.timeScale > 600) {
+// Burns warp-clamp to x600 so a full tank is not consumed in a couple of real seconds.
+// With fuel sim disabled there is nothing to protect, so warp runs unrestricted.
 gameDt = realDt * 600;
+warpLimitReason = "burn";
 }
 if (autopilotTimeGuardSeconds !== null && gameDt > autopilotTimeGuardSeconds) {
 // Auto warp-down near the target: never step past ~5% of time-to-target per frame.
 gameDt = Math.max(realDt, autopilotTimeGuardSeconds);
+warpLimitReason = "ap-guard";
 }
+warpStatusRef.current = { effective: Math.max(1, Math.round(gameDt / realDt)), reason: warpLimitReason };
 const headingStep = Math.min(MAX_HEADING_STEP_PER_FRAME, hullTurnRate * (0.7 + steeringEnginePips / 100) * gameDt);
 if (autopilotRef.current !== "none") {
 const diff = angleDelta(targetHeading, current.ship.heading);
@@ -1380,6 +1391,7 @@ targetBearing={targetBearing}
 domGravityName={domGravity.body ? domGravity.body.name : activeStar.name}
 relativeOrbit={relativeOrbit}
 approachGuidance={hudSnapshot.guidance}
+warpStatus={hudSnapshot.warp}
 mapMode={mapMode}
 setMapMode={setMapMode}
 activePanel={activePanel}

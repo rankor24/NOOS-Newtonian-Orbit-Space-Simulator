@@ -46,6 +46,7 @@ interface EliteCockpitHudProps {
   domGravityName: string;
   relativeOrbit: OrbitMetrics | null;
   approachGuidance: ApproachGuidance | null;
+  warpStatus: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | null };
   mapMode: MapMode;
   setMapMode: (mode: MapMode) => void;
   activePanel: React.ReactNode;
@@ -208,6 +209,7 @@ function EliteCockpitHudInner({
   domGravityName,
   relativeOrbit,
   approachGuidance,
+  warpStatus,
   mapMode,
   setMapMode,
   activePanel,
@@ -323,6 +325,15 @@ function EliteCockpitHudInner({
             </button>
           ))}
         </div>
+        {warpStatus.reason !== null && warpStatus.effective < gameState.timeScale && (
+          <DataRow
+            label="Warp Limit"
+            value={`x${warpStatus.effective.toLocaleString()} — ${
+              warpStatus.reason === "burn" ? "ENGINE BURN" : warpStatus.reason === "dock-hold" ? "DOCKING HOLD" : "AP GUARD"
+            }`}
+            tone="tone-hot"
+          />
+        )}
         <div className="elite-button-strip">
           {themeTabs.map((theme) => (
             <button key={theme.id} className={uiTheme === theme.id ? "is-active" : ""} onClick={() => setUiTheme(theme.id)}>
