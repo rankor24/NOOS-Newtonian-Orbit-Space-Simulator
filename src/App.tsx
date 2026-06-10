@@ -339,6 +339,10 @@ interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy:
     let throttleCommand = (autopilotRef.current === "none" || attitudeHoldModes.has(autopilotRef.current))
       ? current.ship.throttlePercent
       : 0;
+    // Guidance runs once per frame, so at high warp one frame can cover millions of km
+    // and blow straight past the brake point. Transfer/approach modes set this guard to
+    // cap the time step at ~5% of time-to-target (KSP-style auto warp-down near events).
+    let autopilotTimeGuardSeconds: number | null = null;
 
     const tickDomGravity = getDominantGravitySource(
       current.ship.x,
@@ -465,6 +469,9 @@ terminalSpeed: Math.max(25, activeSpecs.maxSpeed * 0.5),
 deltaVBudget: current.ship.engineIsp * 9.80665 * Math.log(shipMass / Math.max(1, current.ship.dryMass)),
 });
 setApproachGuidanceReadout(guidance);
+if (guidance.etaSeconds !== null && Number.isFinite(guidance.etaSeconds)) {
+autopilotTimeGuardSeconds = Math.max(realDt, guidance.etaSeconds * 0.05);
+}
 
 if (guidance.phase === "arrived") {
 throttleCommand = 0;
@@ -508,6 +515,9 @@ targetMass,
 bodyRadius,
 });
 setApproachGuidanceReadout(guidance);
+if (guidance.etaSeconds !== null && Number.isFinite(guidance.etaSeconds)) {
+autopilotTimeGuardSeconds = Math.max(realDt, guidance.etaSeconds * 0.05);
+}
 
 if (guidance.phase === "arrived") {
 throttleCommand = 0;
@@ -540,6 +550,10 @@ gameDt = realDt;
 // Burns warp-clamp to x600: high-delta-v transfer legs stay seconds of real time
 // while the integrator keeps enough substeps for a stable burn arc.
 gameDt = realDt * 600;
+}
+if (autopilotTimeGuardSeconds !== null && gameDt > autopilotTimeGuardSeconds) {
+// Auto warp-down near the target: never step past ~5% of time-to-target per frame.
+gameDt = Math.max(realDt, autopilotTimeGuardSeconds);
 }
 const headingStep = Math.min(MAX_HEADING_STEP_PER_FRAME, hullTurnRate * (0.7 + steeringEnginePips / 100) * gameDt);
 if (autopilotRef.current !== "none") {
