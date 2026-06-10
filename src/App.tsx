@@ -1,9 +1,9 @@
-/**
+﻿/**
  * @license
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { StarSystemCanvas } from "./components/StarSystemCanvas";
 import { EliteCockpitHud } from "./components/EliteCockpitHud";
 import { STARS, AU, getOrCreatePlayableStar } from "./data/stars";
@@ -114,7 +114,8 @@ const [isInMainMenu, setIsInMainMenu] = useState<boolean>(true);
 const [activeTab, setActiveTab] = useState<"market" | "upgrades" | "contracts">("market");
 const [mapMode, setMapMode] = useState<"star" | "ship" | "target">("star");
 const [isThrusting, setIsThrusting] = useState<boolean>(false);
-const [approachGuidanceReadout, setApproachGuidanceReadout] = useState<ApproachGuidance | null>(null);
+// Written every tick by the autopilot; the HUD reads it via the 10 Hz snapshot below.
+const approachGuidanceRef = useRef<ApproachGuidance | null>(null);
 const [dockingClearance, setDockingClearance] = useState<{ bodyId: string; portId: string; holdStartedAt: number | null } | null>(null);
 const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 
@@ -147,6 +148,16 @@ autopilotRef.current = autopilotMode;
 const dockingClearanceRef = useRef(dockingClearance);
 dockingClearanceRef.current = dockingClearance;
 const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: false, circMode: false, matchMode: false });
+
+// The DOM cockpit re-renders from this 10 Hz snapshot instead of every animation frame;
+// only the canvas map needs per-frame data. Text readouts at 10 Hz are indistinguishable.
+const [hudSnapshot, setHudSnapshot] = useState<{ state: GameState; guidance: ApproachGuidance | null }>(() => ({ state: gameState, guidance: null }));
+useEffect(() => {
+  const id = setInterval(() => {
+    setHudSnapshot({ state: stateRef.current, guidance: approachGuidanceRef.current });
+  }, 100);
+  return () => clearInterval(id);
+}, []);
 
 useEffect(() => {
   const persist = () => {
@@ -181,49 +192,72 @@ activeStarRef.current = activeStar;
 const systemBodiesRef = useRef(systemBodies);
 systemBodiesRef.current = systemBodies;
 
-// Selected object info
-const selectedBody = systemBodies.find((b) => b.id === gameState.selectedBodyId) || null;
-const selectedBodyPosition = selectedBody
-? getAbsoluteBodyPosition(selectedBody.id, systemBodies, gameState.gameTime)
-: null;
-const selectedBodyVelocity = selectedBody
-? getBodyVelocity(selectedBody.id, systemBodies, gameState.gameTime)
-: { vx: 0, vy: 0 };
+// Selected object info — HUD-facing orbital math runs on the 10 Hz snapshot, not per frame.
+const hudState = hudSnapshot.state;
 const shipyardCatalog = getShipyardCatalog();
 const selectedPortName = gameState.dockedPortId || "current port";
 const dockedPortInventory = gameState.ownedShips.filter((entry) => entry.homePortId === gameState.dockedPortId);
-const dockingDistance = selectedBodyPosition
-? Math.hypot(gameState.ship.x - selectedBodyPosition.x, gameState.ship.y - selectedBodyPosition.y)
-: Infinity;
-const dockingRelativeSpeed = selectedBody
-? Math.hypot(gameState.ship.vx - selectedBodyVelocity.vx, gameState.ship.vy - selectedBodyVelocity.vy)
-: Infinity;
-const targetBearing = selectedBodyPosition
-? Math.atan2(selectedBodyPosition.y - gameState.ship.y, selectedBodyPosition.x - gameState.ship.x)
-: null;
-const dockingSpecs = getDockingSpecs(selectedBody);
-const selectedBodyPorts = getPortsForBody(selectedBody);
-const canDockAtSelectedBody = !!selectedBody &&
-selectedBodyPorts.length > 0 &&
-dockingDistance < dockingSpecs.maxDistance &&
-dockingRelativeSpeed < dockingSpecs.maxSpeed;
-
-// Dominant orbital gravity source reference (uses frame cache)
-const domGravity = getDominantGravitySource(
-gameState.ship.x,
-gameState.ship.y,
-systemBodies,
-gameState.gameTime,
-activeStar.mass * 1.989e30
-);
-
-// Compute real-time relative orbital parameters
-const relativeOrbit = computeOrbitMetrics(
-gameState.ship,
-domGravity.body || systemBodies[0],
-systemBodies,
-gameState.gameTime
-);
+const hudDerived = useMemo(() => {
+  const selectedBody = systemBodies.find((b) => b.id === hudState.selectedBodyId) || null;
+  const selectedBodyPosition = selectedBody
+    ? getAbsoluteBodyPosition(selectedBody.id, systemBodies, hudState.gameTime)
+    : null;
+  const selectedBodyVelocity = selectedBody
+    ? getBodyVelocity(selectedBody.id, systemBodies, hudState.gameTime)
+    : { vx: 0, vy: 0 };
+  const dockingDistance = selectedBodyPosition
+    ? Math.hypot(hudState.ship.x - selectedBodyPosition.x, hudState.ship.y - selectedBodyPosition.y)
+    : Infinity;
+  const dockingRelativeSpeed = selectedBody
+    ? Math.hypot(hudState.ship.vx - selectedBodyVelocity.vx, hudState.ship.vy - selectedBodyVelocity.vy)
+    : Infinity;
+  const targetBearing = selectedBodyPosition
+    ? Math.atan2(selectedBodyPosition.y - hudState.ship.y, selectedBodyPosition.x - hudState.ship.x)
+    : null;
+  const dockingSpecs = getDockingSpecs(selectedBody);
+  const selectedBodyPorts = getPortsForBody(selectedBody);
+  const canDockAtSelectedBody = !!selectedBody &&
+    selectedBodyPorts.length > 0 &&
+    dockingDistance < dockingSpecs.maxDistance &&
+    dockingRelativeSpeed < dockingSpecs.maxSpeed;
+  const domGravity = getDominantGravitySource(
+    hudState.ship.x,
+    hudState.ship.y,
+    systemBodies,
+    hudState.gameTime,
+    activeStar.mass * 1.989e30
+  );
+  const relativeOrbit = computeOrbitMetrics(
+    hudState.ship,
+    domGravity.body || systemBodies[0],
+    systemBodies,
+    hudState.gameTime
+  );
+  return {
+    selectedBody,
+    selectedBodyPosition,
+    selectedBodyVelocity,
+    selectedBodyPorts,
+    dockingDistance,
+    dockingRelativeSpeed,
+    targetBearing,
+    canDockAtSelectedBody,
+    domGravity,
+    relativeOrbit,
+  };
+}, [hudState, systemBodies, activeStar]);
+const {
+  selectedBody,
+  selectedBodyPosition,
+  selectedBodyVelocity,
+  selectedBodyPorts,
+  dockingDistance,
+  dockingRelativeSpeed,
+  targetBearing,
+  canDockAtSelectedBody,
+  domGravity,
+  relativeOrbit,
+} = hudDerived;
 
 const activeTheme = THEMES[uiTheme];
 
@@ -248,7 +282,7 @@ return;
 const current = stateRef.current;
 let gameDt = realDt * current.timeScale; // Game seconds elapsed; burn phases may clamp this below.
 
-    // Build position cache once per tick — all physics calls reuse this
+    // Build position cache once per tick â€” all physics calls reuse this
     const posCache = buildBodyPositionCache(systemBodiesRef.current, current.gameTime);
 posCacheRef.current = posCache;
 
@@ -368,6 +402,9 @@ const dy = current.ship.y - targetBodyPos.y;
       const relVx = current.ship.vx - targetVx;
       const relVy = current.ship.vy - targetVy;
       const relSpeed = Math.hypot(relVx, relVy);
+      // Bearing must come from this tick's data: the loop closure is created once on
+      // mount, so the render-scope targetBearing would be frozen at its mount value.
+      const tickTargetBearing = current.selectedBodyId ? Math.atan2(-dy, -dx) : null;
       let desiredDeltaVx = 0;
       let desiredDeltaVy = 0;
 
@@ -420,16 +457,16 @@ const dy = current.ship.y - targetBodyPos.y;
         }
 } else if (autopilotRef.current === "align-target") {
 // Steer towards target bearing and keep manual throttle control active!
-if (targetBearing !== null) {
-targetHeading = targetBearing;
+if (tickTargetBearing !== null) {
+targetHeading = tickTargetBearing;
 } else {
 throttleCommand = 0;
 setAutopilotMode("none");
 addConsoleLog("Autopilot: Target alignment disengaged (no active target).", "warning");
 }
 } else if (autopilotRef.current === "hold-anti-target") {
-if (targetBearing !== null) {
-targetHeading = targetBearing + Math.PI;
+if (tickTargetBearing !== null) {
+targetHeading = tickTargetBearing + Math.PI;
 } else {
 throttleCommand = 0;
 setAutopilotMode("none");
@@ -468,7 +505,7 @@ terminalDistance,
 terminalSpeed: Math.max(25, activeSpecs.maxSpeed * 0.5),
 deltaVBudget: current.ship.engineIsp * 9.80665 * Math.log(shipMass / Math.max(1, current.ship.dryMass)),
 });
-setApproachGuidanceReadout(guidance);
+approachGuidanceRef.current = guidance;
 if (guidance.etaSeconds !== null && Number.isFinite(guidance.etaSeconds)) {
 autopilotTimeGuardSeconds = Math.max(realDt, guidance.etaSeconds * 0.05);
 }
@@ -514,7 +551,7 @@ currentHeading: current.ship.heading,
 targetMass,
 bodyRadius,
 });
-setApproachGuidanceReadout(guidance);
+approachGuidanceRef.current = guidance;
 if (guidance.etaSeconds !== null && Number.isFinite(guidance.etaSeconds)) {
 autopilotTimeGuardSeconds = Math.max(realDt, guidance.etaSeconds * 0.05);
 }
@@ -536,7 +573,7 @@ addConsoleLog("Autopilot: Approach aborted (no active target selected).", "warni
 }
 }
 } else {
-setApproachGuidanceReadout(null);
+approachGuidanceRef.current = null;
 }
 
 // Keep ship rotating towards target headings with the same hull rate used for manual steering.
@@ -611,7 +648,7 @@ updatedShip.battery = netBattery;
       gameDt,
       actualThrottlePercent,
       activeStarRef.current.mass * 1.989e30
-// No posCache here — sub-stepping advances sim time, cache would be frozen at t=gameTime
+// No posCache here â€” sub-stepping advances sim time, cache would be frozen at t=gameTime
 );
 
 if (!fuelSimRef.current) {
@@ -707,7 +744,7 @@ ship: { ...updatedShip, throttlePercent: 0 },
               throttlePercent: 0,
             },
           }));
-          addConsoleLog(`✓ Docking clamps engaged at ${dockBody.stationName || dockBody.name}. Trade networks unlocked.`, "success");
+          addConsoleLog(`âœ“ Docking clamps engaged at ${dockBody.stationName || dockBody.name}. Trade networks unlocked.`, "success");
           setActiveTab("market");
           frameId = requestAnimationFrame(tick);
           return;
@@ -820,7 +857,7 @@ setIsThrusting(false);
 setAutopilotMode("none");
 setGameState((g) => ({ ...g, miningTargetId: null }));
 
-addConsoleLog(`💥 CRUNCH! Spaceship breached boundary layer around ${crashedBodyName}. Space fleet pulled distress frame. Chassis refitted at Earth for 1,000¢ liability fee.`, "warning");
+addConsoleLog(`ðŸ’¥ CRUNCH! Spaceship breached boundary layer around ${crashedBodyName}. Space fleet pulled distress frame. Chassis refitted at Earth for 1,000Â¢ liability fee.`, "warning");
 }
 
 // Refresh dynamic markets slowly over time to simulate a trade economy (every 1 game day)
@@ -903,7 +940,7 @@ stats: { ...prev.playerProfile.stats, tonsBought: prev.playerProfile.stats.tonsB
 };
 });
 
-addConsoleLog(`Acquired ${amount}t of ${resMarket.name} for ${totalCost}¢. Cargo weight increased.`, "info");
+addConsoleLog(`Acquired ${amount}t of ${resMarket.name} for ${totalCost}Â¢. Cargo weight increased.`, "info");
 };
 
 const executeSell = (resourceId: string, amount: number) => {
@@ -951,7 +988,7 @@ playerProfile: nextProfile,
 };
 });
 
-addConsoleLog(`Disposed ${amount}t of ${resMarket.name} to refinery bay. Credited +${payout}¢.`, "success");
+addConsoleLog(`Disposed ${amount}t of ${resMarket.name} to refinery bay. Credited +${payout}Â¢.`, "success");
 };
 
 // Docking triggers
@@ -976,7 +1013,7 @@ return;
 const bodyPos = selectedBodyPosition || getAbsoluteBodyPosition(selectedBody.id, systemBodiesRef.current, gameState.gameTime);
 const alignmentError = getDockingAlignmentError(gameState.ship, selectedBody, bodyPos, selectedBodyVelocity);
 if (alignmentError > DOCKING_ALIGNMENT_TOLERANCE) {
-addConsoleLog(`Docking clearance pending at ${selectedBody.stationName || selectedBody.name}: align with approach corridor (${Math.round(alignmentError * 180 / Math.PI)}° error).`, "warning");
+addConsoleLog(`Docking clearance pending at ${selectedBody.stationName || selectedBody.name}: align with approach corridor (${Math.round(alignmentError * 180 / Math.PI)}Â° error).`, "warning");
 }
 
 setDockingClearance({ bodyId: selectedBody.id, portId: dockingPort.id, holdStartedAt: null });
@@ -1028,7 +1065,7 @@ throttlePercent: 0,
 },
 };
 });
-addConsoleLog(`✗ Spaceport clamps released. Attitude thrusters ready. Space pressure sealed. Safe flight, Commander.`, "info");
+addConsoleLog(`âœ— Spaceport clamps released. Attitude thrusters ready. Space pressure sealed. Safe flight, Commander.`, "info");
 };
 
 // Asteroid Drilling toggle trigger
@@ -1083,7 +1120,7 @@ playerProfile: nextProfile,
 };
 });
 
-addConsoleLog(`🏆 MISSION ACCOMPLISHED: Delivered payloads or matched telemetry specifications for "${contract.title}". Credited highly valued +${contract.reward}¢ reward package!`, "success");
+addConsoleLog(`ðŸ† MISSION ACCOMPLISHED: Delivered payloads or matched telemetry specifications for "${contract.title}". Credited highly valued +${contract.reward}Â¢ reward package!`, "success");
 };
 
 // Engineering Upgrades purchase trigger
@@ -1107,7 +1144,7 @@ ship: updatedShipState,
 };
 });
 
-addConsoleLog(`✓ UPGRADE CONCLUDED: ${findUpgrade.name} installed successfully. Space telemetry modules synced.`, "success");
+addConsoleLog(`âœ“ UPGRADE CONCLUDED: ${findUpgrade.name} installed successfully. Space telemetry modules synced.`, "success");
 };
 
 // Interstellar Warp Drive fold jumps
@@ -1184,7 +1221,7 @@ cargo: updatedCargo,
 },
 }));
 
-addConsoleLog(`🌌 COGNITIVE WAVEFOLD INITIATED: Spacetime folded relative to ${dest.name} coordinates. Quantum engine depleted 1,000kg of Helium-3. Standard space entry captures successful.`, "success");
+addConsoleLog(`ðŸŒŒ COGNITIVE WAVEFOLD INITIATED: Spacetime folded relative to ${dest.name} coordinates. Quantum engine depleted 1,000kg of Helium-3. Standard space entry captures successful.`, "success");
 };
 
 const {
@@ -1275,7 +1312,7 @@ const activePanel = (
           stats: { ...prev.playerProfile.stats, refuels: prev.playerProfile.stats.refuels + 1 },
         },
       }));
-      addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}¢.`, "success");
+      addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}Â¢.`, "success");
     }}
     onToggleMining={handleToggleMining}
     onSelectPort={(portId) => setGameState((prev) => prev.isDocked ? { ...prev, dockedPortId: portId } : prev)}
@@ -1326,8 +1363,12 @@ selectedBody,
 : null;
 
 return (
+<div className={`elite-root elite-theme-${uiTheme}`}>
+<div className="elite-map-layer">{mapView}</div>
+<div className="elite-vignette" />
+<div className="elite-scanline" />
 <EliteCockpitHud
-gameState={gameState}
+gameState={hudState}
 activeStar={activeStar}
 selectedBody={selectedBody}
 targetSoi={targetSoi}
@@ -1338,8 +1379,7 @@ dockingClearance={dockingClearance}
 targetBearing={targetBearing}
 domGravityName={domGravity.body ? domGravity.body.name : activeStar.name}
 relativeOrbit={relativeOrbit}
-approachGuidance={approachGuidanceReadout}
-mapView={mapView}
+approachGuidance={hudSnapshot.guidance}
 mapMode={mapMode}
 setMapMode={setMapMode}
 activePanel={activePanel}
@@ -1361,6 +1401,7 @@ onUndock={handleUndockActivate}
 onToggleMining={handleToggleMining}
 onExitToMainMenu={() => setIsInMainMenu(true)}
 />
+</div>
 );
 }
 

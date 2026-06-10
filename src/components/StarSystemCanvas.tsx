@@ -357,6 +357,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const dragMovedRef = useRef(false);
   const drawCacheRef = useRef<BodyPosCache>(new Map());
   const lastRouteComputeAtRef = useRef(0);
+  const frameStatsRef = useRef({ lastAt: 0, deltas: [] as number[], avg: 0, max: 0, windowStartedAt: 0 });
   const lastRouteRef = useRef<RoutePrognosis>({
     points: [],
     duration: 0,
@@ -468,6 +469,9 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     setCameraCenter(getFocusCenter(cameraModeOverride));
   }, [cameraModeOverride]);
 
+  // Scanner reveal changes slowly; recomputing the whole set 60x/s was pure waste.
+  // The epoch bumps at most twice a second, selection changes refresh immediately.
+  const revealEpoch = Math.floor(performance.now() / 500);
   const revealedBodyIds = useMemo(() => {
     const visible = new Set<string>();
 
@@ -492,7 +496,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     }
 
     return visible;
-  }, [bodies, gameTime, miningTargetId, selectedBodyId, ship.systemScannerRange, ship.x, ship.y]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ship position/gameTime sampled via revealEpoch
+  }, [bodies, miningTargetId, selectedBodyId, ship.systemScannerRange, revealEpoch]);
 
   const toScreen = (world: Point, center: Point, width: number, height: number, currentScale = scale): Point => ({
     x: width / 2 + (world.x - center.x) * currentScale,
@@ -566,6 +571,22 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     ctx.fillStyle = "rgba(226,232,240,0.48)";
     ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
     ctx.fillText(`GRID ${stepAu < 1 ? stepAu.toFixed(2) : stepAu.toFixed(0)} AU`, 14, height - 14);
+
+    // Frame pacing readout: avg/max ms between draws over the last second.
+    const stats = frameStatsRef.current;
+    const nowMs = performance.now();
+    if (stats.lastAt > 0) stats.deltas.push(nowMs - stats.lastAt);
+    stats.lastAt = nowMs;
+    if (nowMs - stats.windowStartedAt >= 1000 && stats.deltas.length > 0) {
+      stats.avg = stats.deltas.reduce((sum, value) => sum + value, 0) / stats.deltas.length;
+      stats.max = Math.max(...stats.deltas);
+      stats.deltas.length = 0;
+      stats.windowStartedAt = nowMs;
+    }
+    if (stats.avg > 0) {
+      ctx.fillStyle = stats.max > 80 ? "rgba(248,113,113,0.85)" : "rgba(226,232,240,0.48)";
+      ctx.fillText(`FRAME ${stats.avg.toFixed(1)} ms avg / ${stats.max.toFixed(0)} ms max`, 14, height - 28);
+    }
   };
 
   const drawFeature = (ctx: CanvasRenderingContext2D, feature: SystemFeature, center: Point, width: number, height: number) => {
@@ -642,8 +663,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     ctx.beginPath();
 
     // Hot loop (runs for every visible body every frame): scalar math only,
-    // no per-segment object allocations to keep GC pressure down.
-    const steps = 96;
+    // no per-segment object allocations, segment count scaled to on-screen size.
+    const steps = orbitRadiusPx > 600 ? 96 : orbitRadiusPx > 120 ? 64 : 32;
     const cos = Math.cos(body.argumentOfPeriapsis);
     const sin = Math.sin(body.argumentOfPeriapsis);
     const minorAxisFactor = Math.sqrt(1 - body.eccentricity * body.eccentricity);
@@ -708,15 +729,19 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       return;
     }
 
-    const glow = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius * 3.2);
-    glow.addColorStop(0, body.color);
-    glow.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = glow;
-    ctx.globalAlpha = selected || hovered ? 0.5 : 0.22;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, radius * 3.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    // Radial-gradient glow is expensive to construct; skip it for sub-3px dots
+    // where it is invisible anyway.
+    if (radius >= 3 || selected || hovered) {
+      const glow = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius * 3.2);
+      glow.addColorStop(0, body.color);
+      glow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = glow;
+      ctx.globalAlpha = selected || hovered ? 0.5 : 0.22;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, radius * 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
 
     ctx.fillStyle = body.color;
     ctx.beginPath();

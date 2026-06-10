@@ -46,7 +46,6 @@ interface EliteCockpitHudProps {
   domGravityName: string;
   relativeOrbit: OrbitMetrics | null;
   approachGuidance: ApproachGuidance | null;
-  mapView: React.ReactNode;
   mapMode: MapMode;
   setMapMode: (mode: MapMode) => void;
   activePanel: React.ReactNode;
@@ -196,7 +195,7 @@ function HudPanel({
   );
 }
 
-export function EliteCockpitHud({
+function EliteCockpitHudInner({
   gameState,
   activeStar,
   selectedBody,
@@ -209,7 +208,6 @@ export function EliteCockpitHud({
   domGravityName,
   relativeOrbit,
   approachGuidance,
-  mapView,
   mapMode,
   setMapMode,
   activePanel,
@@ -278,10 +276,7 @@ export function EliteCockpitHud({
   }, [gameState.isDocked, setActiveTab]);
 
   return (
-    <div className={`elite-root elite-theme-${uiTheme}`}>
-      <div className="elite-map-layer">{mapView}</div>
-      <div className="elite-vignette" />
-      <div className="elite-scanline" />
+    <>
 
       <HudPanel
         id="elite-comms-panel"
@@ -766,6 +761,20 @@ export function EliteCockpitHud({
       <div className="elite-scale-readout">
         1 AU = {AU.toExponential(3)} m | Coriolis starter frame: {SIDEWINDER_STARTER_PROFILE.sourceShip}
       </div>
-    </div>
+    </>
   );
 }
+
+// The cockpit DOM only needs to update when its data props change (the parent feeds it a
+// 10 Hz snapshot). Handler props are closures over refs/setState and are semantically
+// stable, so they're excluded from the comparison; activePanel re-renders with the HUD.
+export const EliteCockpitHud = React.memo(EliteCockpitHudInner, (prev, next) => {
+  for (const key of Object.keys(next) as Array<keyof EliteCockpitHudProps>) {
+    if (key === "activePanel") continue;
+    const a = prev[key];
+    const b = next[key];
+    if (typeof b === "function" && typeof a === "function") continue;
+    if (a !== b) return false;
+  }
+  return true;
+});
