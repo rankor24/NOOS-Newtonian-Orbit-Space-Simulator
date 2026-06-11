@@ -7,7 +7,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
 import { CelestialBody, GameState, SystemFeature } from "../types";
 import shipSpriteUrl from "../assets/ship.svg";
-import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, BodyPosCache } from "../utils/physics";
+import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, BodyPosCache, isOrbitReferenceBody, resolveOrbitReferenceBody } from "../utils/physics";
 import { observeFrame, observeMetric } from "../utils/observability";
 
 interface CanvasProps {
@@ -438,6 +438,15 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     return getAbsoluteBodyPosition(bodyId, bodies, gameTime);
   };
 
+  const getCanvasViewport = () => {
+    const canvas = canvasRef.current;
+    const rect = canvas?.getBoundingClientRect();
+    return {
+      width: rect?.width || canvas?.clientWidth || 800,
+      height: rect?.height || canvas?.clientHeight || 500,
+    };
+  };
+
   const palette = THEME[uiTheme];
   const baseScale = Math.pow(10, baseZoomExponent);
   const selectedBody = selectedBodyId ? bodies.find((body) => body.id === selectedBodyId) ?? null : null;
@@ -564,15 +573,6 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     x: center.x + (screen.x - viewCenterX(width)) / currentScale,
     y: center.y + (screen.y - viewCenterY(height)) / currentScale,
   });
-
-  const getCanvasViewport = () => {
-    const canvas = canvasRef.current;
-    const rect = canvas?.getBoundingClientRect();
-    return {
-      width: rect?.width || canvas?.clientWidth || 800,
-      height: rect?.height || canvas?.clientHeight || 500,
-    };
-  };
 
   const resetView = () => {
     setCameraCenter(getFocusCenter(cameraMode));
@@ -945,8 +945,9 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   };
 
   const pickRouteReferenceBody = (): CelestialBody | null => {
-    if (selectedBody) return selectedBody;
-    const candidates = bodies.filter((body) => body.gravitySource || body.type === "star");
+    const selectedReferenceBody = resolveOrbitReferenceBody(selectedBody, null, bodies);
+    if (selectedReferenceBody) return selectedReferenceBody;
+    const candidates = bodies.filter(isOrbitReferenceBody);
     if (candidates.length === 0) return null;
     return candidates.reduce((best, body) => {
       const bestPos = getBodyPos(best.id);

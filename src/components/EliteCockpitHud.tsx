@@ -704,7 +704,7 @@ function EliteCockpitHudInner({
                   disabled={!selectedBody || gameState.isDocked}
                   className={autopilotMode === "circularize" ? "is-active" : ""}
                   onClick={() => setAutopilotMode(autopilotMode === "circularize" ? "none" : "circularize")}
-                  title="Circularize orbit around current body"
+                  title="Circularize around selected gravity body; station targets use parent body"
                 >
                   CIRC
                 </button>

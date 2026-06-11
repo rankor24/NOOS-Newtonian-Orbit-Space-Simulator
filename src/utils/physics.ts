@@ -270,6 +270,31 @@ export function getSphereOfInfluence(body: CelestialBody, parentMass: number = 1
   return body.semiMajorAxis * Math.pow((body.mass ?? 0) / parentMass, 0.4);
 }
 
+export function isOrbitReferenceBody(body: CelestialBody | null | undefined): boolean {
+  return !!body &&
+    body.gravitySource !== false &&
+    body.type !== "station" &&
+    body.type !== "belt" &&
+    body.type !== "ring" &&
+    (body.type === "star" || (body.mass ?? 0) > 0);
+}
+
+export function resolveOrbitReferenceBody(
+  candidate: CelestialBody | null | undefined,
+  fallback: CelestialBody | null | undefined,
+  bodies: CelestialBody[]
+): CelestialBody | null {
+  if (isOrbitReferenceBody(candidate)) return candidate;
+
+  if (candidate?.parentId) {
+    const parent = bodies.find((body) => body.id === candidate.parentId);
+    if (isOrbitReferenceBody(parent)) return parent;
+  }
+
+  if (isOrbitReferenceBody(fallback)) return fallback;
+  return bodies.find(isOrbitReferenceBody) ?? null;
+}
+
 /**
  * Finds the dominant gravity source (Active Body) influencing the ship.
  * Returns the body and the relative distance to it.

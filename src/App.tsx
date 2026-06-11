@@ -11,7 +11,7 @@ import { MainMenu } from "./components/MainMenu";
 import { createInitialState, formatGameTime, normalizeCargoManifest, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION } from "./data/ships";
 import { GameState, CelestialBody, SpaceContract } from "./types";
-import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, getShipCargoMassKg, getSphereOfInfluence, propagateKeplerianCoast } from "./utils/physics";
+import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, getShipCargoMassKg, getSphereOfInfluence, propagateKeplerianCoast, resolveOrbitReferenceBody } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
@@ -50,6 +50,7 @@ const METERS_PER_LIGHT_YEAR = 9.4607e15;
 const SYSTEM_ESCAPE_RADIUS_METERS = 50 * AU;
 const STAR_ARRIVAL_RADIUS_LY = 0.02;
 const SUN_RADIUS_METERS = 6.957e8;
+const CIRCULARIZE_SUCCESS_ECCENTRICITY = 0.12;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const angleDelta = (target: number, current: number) => Math.atan2(Math.sin(target - current), Math.cos(target - current));
@@ -258,9 +259,10 @@ const hudDerived = useMemo(() => {
     hudState.gameTime,
     activeStar.mass * 1.989e30
   );
+  const orbitReferenceBody = resolveOrbitReferenceBody(selectedBody, domGravity.body || systemBodies[0], systemBodies);
   const relativeOrbit = computeOrbitMetrics(
     hudState.ship,
-    domGravity.body || systemBodies[0],
+    orbitReferenceBody,
     systemBodies,
     hudState.gameTime
   );
@@ -428,7 +430,13 @@ playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.tot
       activeStarRef.current.mass * 1.989e30,
       posCache
     );
-    const activeTargetBody = systemBodiesRef.current.find((b) => b.id === current.selectedBodyId) || tickDomGravity.body;
+    const selectedTickBody = systemBodiesRef.current.find((b) => b.id === current.selectedBodyId) || null;
+    const orbitReferenceBody = resolveOrbitReferenceBody(
+      selectedTickBody,
+      tickDomGravity.body || systemBodiesRef.current[0],
+      systemBodiesRef.current
+    );
+    const activeTargetBody = selectedTickBody || tickDomGravity.body || orbitReferenceBody;
 
 if (autopilotRef.current !== "none" && activeTargetBody) {
 // Calculate relative coordinates and velocities using frame cache
@@ -466,36 +474,56 @@ const dy = current.ship.y - targetBodyPos.y;
           addConsoleLog("Autopilot: Relative velocity matched. Orbital station approach secured.", "success");
         }
       } else if (autopilotRef.current === "circularize") {
+        if (!orbitReferenceBody) {
+          throttleCommand = 0;
+          setAutopilotMode("none");
+          addConsoleLog("Autopilot: Circularize aborted (no valid gravity reference).", "warning");
+        } else {
+        const orbitBodyPos = posCache.get(orbitReferenceBody.id) || getAbsoluteBodyPosition(orbitReferenceBody.id, systemBodiesRef.current, current.gameTime);
+        const orbitBodyVelocity = getBodyVelocity(orbitReferenceBody.id, systemBodiesRef.current, current.gameTime);
+        const orbitDx = current.ship.x - orbitBodyPos.x;
+        const orbitDy = current.ship.y - orbitBodyPos.y;
+        const orbitRelVx = current.ship.vx - orbitBodyVelocity.vx;
+        const orbitRelVy = current.ship.vy - orbitBodyVelocity.vy;
         const tickRelativeOrbit = computeOrbitMetrics(
           current.ship,
-          tickDomGravity.body || systemBodiesRef.current[0],
+          orbitReferenceBody,
           systemBodiesRef.current,
           current.gameTime,
           posCache
         );
-        // Circularize around the selected body using a local tangential target velocity.
+        // Circularize around the valid gravity body. Station targets resolve to parent bodies.
         const G_const = 6.6743e-11;
-        const bodyMass = activeTargetBody.type === "star" ? activeTargetBody.mass * 1.989e30 : activeTargetBody.mass;
-        const dist = Math.hypot(dx, dy);
-        const v_circular = Math.sqrt((G_const * bodyMass) / dist);
+        const bodyMass = orbitReferenceBody.type === "star" ? orbitReferenceBody.mass * 1.989e30 : orbitReferenceBody.mass;
+        const dist = Math.hypot(orbitDx, orbitDy);
         const safeDist = Math.max(1, dist);
-        const orbitalDirection = dx * relVy - dy * relVx >= 0 ? 1 : -1;
-        const tangentX = (-dy / safeDist) * orbitalDirection;
-        const tangentY = (dx / safeDist) * orbitalDirection;
+        const v_circular = bodyMass && bodyMass > 0 ? Math.sqrt((G_const * bodyMass) / safeDist) : 0;
+        const orbitalDirection = orbitDx * orbitRelVy - orbitDy * orbitRelVx >= 0 ? 1 : -1;
+        const tangentX = (-orbitDy / safeDist) * orbitalDirection;
+        const tangentY = (orbitDx / safeDist) * orbitalDirection;
         const desiredRelVx = tangentX * v_circular;
         const desiredRelVy = tangentY * v_circular;
-        desiredDeltaVx = desiredRelVx - relVx;
-        desiredDeltaVy = desiredRelVy - relVy;
+        desiredDeltaVx = desiredRelVx - orbitRelVx;
+        desiredDeltaVy = desiredRelVy - orbitRelVy;
         const speedError = Math.hypot(desiredDeltaVx, desiredDeltaVy);
+        const hasBoundOrbit = !!tickRelativeOrbit &&
+          tickRelativeOrbit.eccentricity < CIRCULARIZE_SUCCESS_ECCENTRICITY &&
+          tickRelativeOrbit.apoapsisAltitude !== null &&
+          tickRelativeOrbit.periapsisAltitude > 0;
 
         if (speedError > 15) {
           targetHeading = Math.atan2(desiredDeltaVy, desiredDeltaVx);
           const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
           throttleCommand = angleError < 0.35 ? clamp((speedError / 3000) * 100, 8, 65) : 0;
+        } else if (hasBoundOrbit) {
+          throttleCommand = 0;
+          setAutopilotMode("none");
+          addConsoleLog(`Autopilot: Orbit circularized around ${orbitReferenceBody.name}. Eccentricity: ${tickRelativeOrbit.eccentricity.toFixed(3)}`, "success");
         } else {
           throttleCommand = 0;
           setAutopilotMode("none");
-          addConsoleLog(`Autopilot: Orbit circularized successfully. Eccentricity: ${tickRelativeOrbit.eccentricity.toFixed(3)}`, "success");
+          addConsoleLog(`Autopilot: Circularize paused around ${orbitReferenceBody.name}; orbit not closed. Eccentricity: ${tickRelativeOrbit?.eccentricity.toFixed(3) ?? "unknown"}`, "warning");
+        }
         }
 } else if (autopilotRef.current === "align-target") {
 // Steer towards target bearing and keep manual throttle control active!
@@ -515,11 +543,23 @@ setAutopilotMode("none");
 addConsoleLog("Autopilot: Anti-target hold disengaged (no active target).", "warning");
 }
 } else if (autopilotRef.current === "hold-prograde") {
-const speed = Math.hypot(current.ship.vx, current.ship.vy);
-if (speed > 0.1) targetHeading = Math.atan2(current.ship.vy, current.ship.vx);
+const velocityReferenceBody = orbitReferenceBody || tickDomGravity.body || systemBodiesRef.current[0];
+const velocityReference = velocityReferenceBody
+? getBodyVelocity(velocityReferenceBody.id, systemBodiesRef.current, current.gameTime)
+: { vx: 0, vy: 0 };
+const progradeVx = current.ship.vx - velocityReference.vx;
+const progradeVy = current.ship.vy - velocityReference.vy;
+const speed = Math.hypot(progradeVx, progradeVy);
+if (speed > 0.1) targetHeading = Math.atan2(progradeVy, progradeVx);
 } else if (autopilotRef.current === "hold-retrograde") {
-const speed = Math.hypot(current.ship.vx, current.ship.vy);
-if (speed > 0.1) targetHeading = Math.atan2(current.ship.vy, current.ship.vx) + Math.PI;
+const velocityReferenceBody = orbitReferenceBody || tickDomGravity.body || systemBodiesRef.current[0];
+const velocityReference = velocityReferenceBody
+? getBodyVelocity(velocityReferenceBody.id, systemBodiesRef.current, current.gameTime)
+: { vx: 0, vy: 0 };
+const progradeVx = current.ship.vx - velocityReference.vx;
+const progradeVy = current.ship.vy - velocityReference.vy;
+const speed = Math.hypot(progradeVx, progradeVy);
+if (speed > 0.1) targetHeading = Math.atan2(progradeVy, progradeVx) + Math.PI;
 } else if (autopilotRef.current === "hold-radial-out" || autopilotRef.current === "hold-radial-in") {
 const radialBody = tickDomGravity.body || systemBodiesRef.current[0];
 const radialPos = posCache.get(radialBody.id) || getAbsoluteBodyPosition(radialBody.id, systemBodiesRef.current, current.gameTime);
