@@ -5,17 +5,17 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
-import { CelestialBody, ShipState, SystemFeature } from "../types";
+import { CelestialBody, GameState, SystemFeature } from "../types";
 import shipSpriteUrl from "../assets/ship.svg";
-import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, getCachedPosition, BodyPosCache } from "../utils/physics";
-import { observeFrame } from "../utils/observability";
+import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, BodyPosCache } from "../utils/physics";
+import { observeFrame, observeMetric } from "../utils/observability";
 
 interface CanvasProps {
   bodies: CelestialBody[];
-  ship: ShipState;
+  getFrameState: () => GameState;
   selectedBodyId: string | null;
   onSelectBody: (id: string | null) => void;
-  gameTime: number;
+  isDocked: boolean;
   isThrusting: boolean;
   miningActive: boolean;
   miningTargetId: string | null;
@@ -24,6 +24,7 @@ interface CanvasProps {
   uiTheme?: "amber" | "blue" | "green" | "red";
   cameraModeOverride?: "ship" | "target" | "star" | "fit";
   hideCameraControls?: boolean;
+  autopilotMode?: AutopilotMode;
   /** Screen-space margins (px) hidden behind the HUD, so the camera focuses the
    *  visible band instead of the geometric centre of the full canvas. */
   viewportInsets?: { top?: number; bottom?: number; left?: number; right?: number };
@@ -47,6 +48,7 @@ type RoutePrognosis = {
   soiEntryBodyId: string | null;
   impactIndex: number | null;
 };
+type TimingWindow = { startedAt: number; count: number; total: number; max: number };
 
 const AU = 1.496e11;
 const MIN_ZOOM_EXPONENT = -14;
@@ -55,6 +57,7 @@ const DEFAULT_ZOOM_EXPONENT = -9;
 const SUN_RADIUS_METERS = 6.96e8;
 
 const GRID_STEPS_AU = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 250, 500, 1000, 2500];
+const METRIC_WINDOW_MS = 5000;
 
 // Player ship sprite, loaded once per module. Nose points up in the artwork,
 // canvas heading 0 points +x, hence the +PI/2 rotation offset when drawing.
@@ -159,6 +162,49 @@ function clamp(value: number, min: number, max: number) {
 
 function clampZoomExponent(value: number) {
   return clamp(value, MIN_ZOOM_EXPONENT, MAX_ZOOM_EXPONENT);
+}
+
+function createEmptyRoutePrognosis(): RoutePrognosis {
+  return {
+    points: [],
+    duration: 0,
+    referenceBodyId: null,
+    referenceClosestIndex: 0,
+    referenceClosestAltitude: Infinity,
+    referenceFarthestIndex: 0,
+    referenceFarthestAltitude: null,
+    selectedClosestIndex: null,
+    selectedClosestDistance: null,
+    soiEntryIndex: null,
+    soiEntryBodyId: null,
+    impactIndex: null,
+  };
+}
+
+function createTimingWindow(): TimingWindow {
+  return { startedAt: performance.now(), count: 0, total: 0, max: 0 };
+}
+
+function observeTimingWindow(
+  window: TimingWindow,
+  name: string,
+  durationMs: number,
+  attrs?: Record<string, unknown>
+) {
+  window.count += 1;
+  window.total += durationMs;
+  window.max = Math.max(window.max, durationMs);
+
+  const now = performance.now();
+  if (now - window.startedAt < METRIC_WINDOW_MS || window.count === 0) return;
+
+  observeMetric(`${name}.avg`, Number((window.total / window.count).toFixed(2)), "ms", attrs);
+  observeMetric(`${name}.max`, Number(window.max.toFixed(2)), "ms", attrs);
+
+  window.startedAt = now;
+  window.count = 0;
+  window.total = 0;
+  window.max = 0;
 }
 
 function formatDistanceMeters(value: number) {
@@ -335,16 +381,15 @@ function shouldAlwaysRevealBody(body: CelestialBody) {
   if (!body.parentId) return true;
   if (body.type === "station") return true;
   if (body.parentId === "star_sol" && body.type !== "asteroid" && body.type !== "comet") return true;
-  if (body.type === "moon" && !isDesignationMoonName(body.name)) return true;
   return PRIORITY_SMALL_BODIES.has(body.name) || !!body.stationName;
 }
 
 export const StarSystemCanvas: React.FC<CanvasProps> = ({
   bodies,
-  ship,
+  getFrameState,
   selectedBodyId,
   onSelectBody,
-  gameTime,
+  isDocked,
   isThrusting,
   miningActive,
   miningTargetId,
@@ -377,23 +422,15 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   const drawCacheRef = useRef<BodyPosCache>(new Map());
   const lastRouteComputeAtRef = useRef(0);
   const frameStatsRef = useRef({ lastAt: 0, deltas: [] as number[], avg: 0, max: 0, windowStartedAt: 0 });
-  const lastRouteRef = useRef<RoutePrognosis>({
-    points: [],
-    duration: 0,
-    referenceBodyId: null,
-    referenceClosestIndex: 0,
-    referenceClosestAltitude: Infinity,
-    referenceFarthestIndex: 0,
-    referenceFarthestAltitude: null,
-    selectedClosestIndex: null,
-    selectedClosestDistance: null,
-    soiEntryIndex: null,
-    soiEntryBodyId: null,
-    impactIndex: null,
-  });
+  const canvasTimingRef = useRef<TimingWindow>(createTimingWindow());
+  const routeTimingRef = useRef<TimingWindow>(createTimingWindow());
+  const lastRouteRef = useRef<RoutePrognosis>(createEmptyRoutePrognosis());
 
   const lastRenderedCenterRef = useRef<Point>({ x: 0, y: 0 });
   const lastRenderedScaleRef = useRef<number>(Math.pow(10, DEFAULT_ZOOM_EXPONENT));
+  const frameState = getFrameState();
+  let ship = frameState.ship;
+  let gameTime = frameState.gameTime;
 
   const getBodyPos = (bodyId: string): Point => {
     const cached = drawCacheRef.current.get(bodyId);
@@ -513,6 +550,10 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     return visible;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ship position/gameTime sampled via revealEpoch
   }, [bodies, miningTargetId, selectedBodyId, ship.systemScannerRange, revealEpoch]);
+  const revealedBodies = useMemo(
+    () => bodies.filter((body) => revealedBodyIds.has(body.id)),
+    [bodies, revealedBodyIds]
+  );
 
   const toScreen = (world: Point, center: Point, width: number, height: number, currentScale = scale): Point => ({
     x: viewCenterX(width) + (world.x - center.x) * currentScale,
@@ -934,8 +975,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
 
     timedPoints.forEach((point, index) => {
       const t = gameTime + point.t;
-      const cache = buildBodyPositionCache(bodies, t);
-      const dominant = getDominantGravitySource(point.x, point.y, bodies, t, 1.989e30, cache).body;
+      const dominant = getDominantGravitySource(point.x, point.y, bodies, t, 1.989e30).body;
       if (index === 0) {
         previousDominantBodyId = dominant?.id ?? null;
       } else if (soiEntryIndex === null && (dominant?.id ?? null) !== previousDominantBodyId) {
@@ -944,9 +984,11 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       }
       previousDominantBodyId = dominant?.id ?? null;
 
+      const referencePos = referenceBody
+        ? getAbsoluteBodyPosition(referenceBody.id, bodies, t)
+        : null;
       if (referenceBody) {
-        const bodyPos = getCachedPosition(cache, referenceBody.id);
-        const altitude = Math.hypot(point.x - bodyPos.x, point.y - bodyPos.y) - (referenceBody.radius ?? 0);
+        const altitude = Math.hypot(point.x - referencePos!.x, point.y - referencePos!.y) - (referenceBody.radius ?? 0);
         if (altitude < referenceClosestAltitude) {
           referenceClosestAltitude = altitude;
           referenceClosestIndex = index;
@@ -961,7 +1003,9 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       }
 
       if (selectedBody) {
-        const targetPos = getCachedPosition(cache, selectedBody.id);
+        const targetPos = selectedBody.id === referenceBody?.id && referencePos
+          ? referencePos
+          : getAbsoluteBodyPosition(selectedBody.id, bodies, t);
         const targetDistance = Math.hypot(point.x - targetPos.x, point.y - targetPos.y);
         if (selectedClosestDistance === null || targetDistance < selectedClosestDistance) {
           selectedClosestDistance = targetDistance;
@@ -1013,6 +1057,13 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   };
 
   const drawRoute = (ctx: CanvasRenderingContext2D, center: Point, width: number, height: number) => {
+    if (isDocked) {
+      if (lastRouteRef.current.points.length > 0) {
+        lastRouteRef.current = createEmptyRoutePrognosis();
+      }
+      return;
+    }
+
     // Route prediction is the most expensive draw step; refresh on a wall-clock
     // budget so high frame rates and high warp don't multiply the cost.
     const nowMs = performance.now();
@@ -1026,6 +1077,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       const routeDuration = targetDistance
         ? Math.max(7200, Math.min(86400 * 5, (targetDistance / shipSpeed) * 2.2))
         : 86400 * 3;
+      const routeStartedAt = performance.now();
       const rawRoute = predictShipRoute(
         ship,
         bodies,
@@ -1036,6 +1088,11 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       );
 
       lastRouteRef.current = analyzeRoute(rawRoute, routeDuration, pickRouteReferenceBody());
+      observeTimingWindow(routeTimingRef.current, "render.route_predict_ms", performance.now() - routeStartedAt, {
+        bodies: bodies.length,
+        points: rawRoute.length,
+        selectedTarget: Boolean(selectedBodyId),
+      });
     }
 
     const prognosis = lastRouteRef.current;
@@ -1146,88 +1203,108 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    let frameId = 0;
 
-    const rect = canvas.getBoundingClientRect();
-    const width = rect.width || 800;
-    const height = rect.height || 500;
-    const dpr = window.devicePixelRatio || 1;
-    const targetWidth = Math.round(width * dpr);
-    const targetHeight = Math.round(height * dpr);
+    const drawFrame = () => {
+      const frameStartedAt = performance.now();
+      const liveFrameState = getFrameState();
+      ship = liveFrameState.ship;
+      gameTime = liveFrameState.gameTime;
 
-    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    } else {
-      ctx.clearRect(0, 0, width, height);
-    }
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width || 800;
+      const height = rect.height || 500;
+      const dpr = window.devicePixelRatio || 1;
+      const targetWidth = Math.round(width * dpr);
+      const targetHeight = Math.round(height * dpr);
 
-    // Build position cache once per frame for all draw calls
-    const drawCache = buildBodyPositionCache(bodies, gameTime);
-    drawCacheRef.current = drawCache;
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      } else {
+        ctx.clearRect(0, 0, width, height);
+      }
 
-    const center = resolved.center;
-    drawBackground(ctx, width, height);
-    drawGrid(ctx, center, width, height);
+      drawCacheRef.current = buildBodyPositionCache(bodies, gameTime);
 
-    systemFeatures
-      .filter((feature) => feature.type !== "ring")
-      .forEach((feature) => drawFeature(ctx, feature, center, width, height));
+      const center = resolved.center;
+      drawBackground(ctx, width, height);
+      drawGrid(ctx, center, width, height);
 
-    const starPt = toScreen({ x: 0, y: 0 }, center, width, height);
-    const starRadius = clamp(SUN_RADIUS_METERS * scale, 10, 120);
-    const starGlow = ctx.createRadialGradient(starPt.x, starPt.y, 0, starPt.x, starPt.y, starRadius * 3.5);
-    starGlow.addColorStop(0, "#ffffff");
-    starGlow.addColorStop(0.22, starColor);
-    starGlow.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = starGlow;
-    ctx.beginPath();
-    ctx.arc(starPt.x, starPt.y, starRadius * 3.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = starColor;
-    ctx.beginPath();
-    ctx.arc(starPt.x, starPt.y, starRadius, 0, Math.PI * 2);
-    ctx.fill();
+      systemFeatures
+        .filter((feature) => feature.type !== "ring")
+        .forEach((feature) => drawFeature(ctx, feature, center, width, height));
 
-    bodies.filter((body) => revealedBodyIds.has(body.id)).forEach((body) => drawOrbit(ctx, body, center, width, height));
-    bodies.filter((body) => revealedBodyIds.has(body.id)).forEach((body) => drawBody(ctx, body, center, width, height));
+      const starPt = toScreen({ x: 0, y: 0 }, center, width, height);
+      const starRadius = clamp(SUN_RADIUS_METERS * scale, 10, 120);
+      const starGlow = ctx.createRadialGradient(starPt.x, starPt.y, 0, starPt.x, starPt.y, starRadius * 3.5);
+      starGlow.addColorStop(0, "#ffffff");
+      starGlow.addColorStop(0.22, starColor);
+      starGlow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = starGlow;
+      ctx.beginPath();
+      ctx.arc(starPt.x, starPt.y, starRadius * 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = starColor;
+      ctx.beginPath();
+      ctx.arc(starPt.x, starPt.y, starRadius, 0, Math.PI * 2);
+      ctx.fill();
 
-    systemFeatures
-      .filter((feature) => feature.type === "ring")
-      .forEach((feature) => drawFeature(ctx, feature, center, width, height));
+      revealedBodies.forEach((body) => drawOrbit(ctx, body, center, width, height));
+      revealedBodies.forEach((body) => drawBody(ctx, body, center, width, height));
 
-    drawRoute(ctx, center, width, height);
-    drawMiningBeam(ctx, center, width, height);
-    drawFlightVectors(ctx, center, width, height);
-    drawShip(ctx, center, width, height);
+      systemFeatures
+        .filter((feature) => feature.type === "ring")
+        .forEach((feature) => drawFeature(ctx, feature, center, width, height));
 
-    // Keep status text in the left-edge middle band, clear of the corner HUD panels.
-    const statusTextY = Math.round(height * 0.42);
-    ctx.fillStyle = "rgba(226,232,240,0.72)";
-    ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
-    ctx.fillText(`ZOOM 10^${zoomExponent.toFixed(2)} px/m`, 14, statusTextY);
-    ctx.fillText(`CENTER ${cameraMode.toUpperCase()}`, 14, statusTextY + 14);
-    if (selectedBody) {
-      const pos = getBodyPos(selectedBody.id);
-      ctx.fillText(`TARGET ${selectedBody.name} ${formatDistanceMeters(Math.hypot(ship.x - pos.x, ship.y - pos.y))}`, 14, statusTextY + 28);
-    }
+      if (!isDocked) {
+        drawRoute(ctx, center, width, height);
+      } else if (lastRouteRef.current.points.length > 0) {
+        lastRouteRef.current = createEmptyRoutePrognosis();
+      }
+      drawMiningBeam(ctx, center, width, height);
+      if (!isDocked) {
+        drawFlightVectors(ctx, center, width, height);
+      }
+      drawShip(ctx, center, width, height);
 
-    observeFrame();
+      const statusTextY = Math.round(height * 0.42);
+      ctx.fillStyle = "rgba(226,232,240,0.72)";
+      ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
+      ctx.fillText(`ZOOM 10^${zoomExponent.toFixed(2)} px/m`, 14, statusTextY);
+      ctx.fillText(`CENTER ${cameraMode.toUpperCase()}`, 14, statusTextY + 14);
+      if (selectedBody) {
+        const pos = getBodyPos(selectedBody.id);
+        ctx.fillText(`TARGET ${selectedBody.name} ${formatDistanceMeters(Math.hypot(ship.x - pos.x, ship.y - pos.y))}`, 14, statusTextY + 28);
+      }
+
+      observeTimingWindow(canvasTimingRef.current, "render.canvas_frame_ms", performance.now() - frameStartedAt, {
+        bodies: bodies.length,
+        docked: isDocked,
+        revealed: revealedBodies.length,
+      });
+      observeFrame();
+      frameId = requestAnimationFrame(drawFrame);
+    };
+
+    frameId = requestAnimationFrame(drawFrame);
+    return () => cancelAnimationFrame(frameId);
   }, [
     bodies,
     cameraMode,
-    gameTime,
+    getFrameState,
     hoveredBodyId,
+    isDocked,
     isThrusting,
     miningActive,
     miningTargetId,
     palette,
     resolved.center,
-    revealedBodyIds,
+    revealedBodies,
     scale,
     selectedBody,
     selectedBodyId,
-    ship,
     starColor,
     systemFeatures,
     zoomExponent,
@@ -1239,8 +1316,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     let found: string | null = null;
     let bestDistance = 28;
 
-    for (const body of bodies) {
-      if (!revealedBodyIds.has(body.id)) continue;
+    for (const body of revealedBodies) {
       const world = getBodyPos(body.id);
       const pt = toScreen(world, center, width, height);
       const radius = getBodyDisplayRadius(body, scale);
@@ -1304,7 +1380,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       return;
     }
 
-    setHoveredBodyId(findBodyAtScreenPoint(getEventPoint(event)));
+    const nextHoveredBodyId = findBodyAtScreenPoint(getEventPoint(event));
+    setHoveredBodyId((current) => current === nextHoveredBodyId ? current : nextHoveredBodyId);
   };
 
   const handleMouseUp = () => {

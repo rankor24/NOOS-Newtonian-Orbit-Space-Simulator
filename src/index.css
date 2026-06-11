@@ -6,8 +6,8 @@
   --elite-text: #f1f5f9;
   --elite-muted: #69707a;
   --elite-soft: rgba(255, 255, 255, 0.08);
-  --elite-panel: rgba(5, 5, 5, 0.62);
-  --elite-panel-strong: rgba(5, 5, 5, 0.82);
+  --elite-panel: rgba(5, 5, 5, 0.86);
+  --elite-panel-strong: rgba(5, 5, 5, 0.94);
   --elite-line: rgba(255, 255, 255, 0.16);
   --elite-accent: #ff8c1a;
   --elite-accent-dim: rgba(255, 140, 26, 0.16);
@@ -138,7 +138,6 @@ input {
   border: 1px solid var(--elite-line);
   background: var(--elite-panel);
   color: var(--elite-text);
-  backdrop-filter: blur(8px);
 }
 
 .elite-panel::before,
@@ -380,7 +379,6 @@ button:disabled:hover {
   left: min(25rem, 30vw);
   border: 1px solid var(--elite-line);
   background: var(--elite-panel-strong);
-  backdrop-filter: blur(10px);
 }
 
 .elite-status-strip {
@@ -648,13 +646,12 @@ input[type="range"] {
   min-height: 0.4rem;
   border: 1px solid var(--elite-line);
   background: rgba(255, 255, 255, 0.04);
-  transition: background-color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .elite-pip-cell.is-lit {
   border-color: var(--elite-accent);
   background: var(--elite-accent);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--elite-accent) 70%, transparent);
 }
 
 .elite-pip-label {
@@ -744,19 +741,17 @@ input[type="range"] {
   height: 0.42rem;
   border: 1px solid var(--elite-line);
   background: rgba(255, 255, 255, 0.04);
-  transition: background-color 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .elite-seg-bar i.is-lit {
   border-color: var(--elite-accent);
   background: var(--elite-accent);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--elite-accent) 60%, transparent);
 }
 
 .elite-seg-bar.seg-cyan i.is-lit {
   border-color: var(--elite-cyan);
   background: var(--elite-cyan);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--elite-cyan) 60%, transparent);
 }
 
 .elite-gauge-row {
@@ -819,7 +814,6 @@ input[type="range"] {
   padding: 0.45rem;
   border: 1px solid var(--elite-line);
   background: var(--elite-panel-strong);
-  backdrop-filter: blur(10px);
 }
 
 .elite-management-dock button {
@@ -861,7 +855,6 @@ input[type="range"] {
   justify-content: center;
   padding: 2rem;
   background: rgba(0, 0, 0, 0.72);
-  backdrop-filter: blur(5px);
 }
 
 .elite-fullscreen-modal {
@@ -928,7 +921,7 @@ input[type="range"] {
   z-index: 2;
   overflow: hidden;
   pointer-events: none;
-  opacity: 0.06;
+  opacity: 0.035;
   background: repeating-linear-gradient(
     180deg,
     transparent 0,
@@ -939,19 +932,7 @@ input[type="range"] {
 }
 
 .elite-scanline::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 34%;
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in srgb, var(--elite-accent) 35%, transparent),
-    transparent
-  );
-  animation: elite-scan-sweep 11s linear infinite;
+  content: none;
 }
 
 @keyframes elite-scan-sweep {
@@ -966,7 +947,7 @@ input[type="range"] {
 }
 
 .elite-panel-title {
-  animation: elite-flicker 9s infinite;
+  animation: none;
 }
 
 @keyframes elite-flicker {
@@ -986,11 +967,11 @@ input[type="range"] {
 
 .elite-lamp.is-active {
   text-shadow: 0 0 7px color-mix(in srgb, var(--elite-accent) 80%, transparent);
-  animation: elite-lamp-glow 2.2s ease-in-out infinite;
+  animation: none;
 }
 
 .elite-lamp.is-active svg {
-  filter: drop-shadow(0 0 3px var(--elite-accent));
+  filter: none;
 }
 
 @keyframes elite-lamp-glow {

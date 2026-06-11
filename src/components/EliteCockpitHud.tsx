@@ -47,7 +47,8 @@ interface EliteCockpitHudProps {
   domGravityName: string;
   relativeOrbit: OrbitMetrics | null;
   approachGuidance: ApproachGuidance | null;
-  warpStatus: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null };
+  warpStatus: { effective: number; reason: "dock-hold" | "ap-guard" | "proximity" | null };
+  fps: number;
   mapMode: MapMode;
   setMapMode: (mode: MapMode) => void;
   activePanel: React.ReactNode;
@@ -89,14 +90,14 @@ const themeTabs: Array<{ id: UiTheme; label: string }> = [
   { id: "red", label: "RED" },
 ];
 
-function DataRow({ label, value, tone = "" }: { label: string; value: React.ReactNode; tone?: string }) {
+const DataRow = React.memo(function DataRow({ label, value, tone = "" }: { label: string; value: React.ReactNode; tone?: string }) {
   return (
     <div className="elite-data-row">
       <span>{label}</span>
       <strong className={tone}>{value}</strong>
     </div>
   );
-}
+});
 
 function formatOrbitDistance(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "OPEN";
@@ -114,14 +115,14 @@ function formatOrbitPeriod(seconds: number | null) {
   return `${Math.round(seconds)} s`;
 }
 
-function StatusLamp({ label, active }: { label: string; active: boolean }) {
+const StatusLamp = React.memo(function StatusLamp({ label, active }: { label: string; active: boolean }) {
   return (
     <span className={`elite-lamp ${active ? "is-active" : ""}`}>
       <CircleDot size={10} />
       {label}
     </span>
   );
-}
+});
 
 // Power distribution is a shared 100% budget split across three channels; we present it
 // Elite-style as 6 pips (max 4 per channel), so 1 pip = 1/6 of reactor output.
@@ -132,7 +133,7 @@ function pipsFromPercent(value: number) {
   return Math.max(0, Math.min(PIP_MAX, Math.round((value * PIP_TOTAL) / 100)));
 }
 
-function PowerPips({
+const PowerPips = React.memo(function PowerPips({
   label,
   value,
   icon: Icon,
@@ -158,13 +159,13 @@ function PowerPips({
       <strong>{value}%</strong>
     </button>
   );
-}
+});
 
 function latestLogs(logs: MissionLog[]) {
   return logs.slice(0, 6);
 }
 
-function HudPanel({
+const HudPanel = React.memo(function HudPanel({
   id,
   title,
   icon: Icon,
@@ -202,7 +203,7 @@ function HudPanel({
       </div>
     </section>
   );
-}
+});
 
 function EliteCockpitHudInner({
   gameState,
@@ -218,6 +219,7 @@ function EliteCockpitHudInner({
   relativeOrbit,
   approachGuidance,
   warpStatus,
+  fps,
   mapMode,
   setMapMode,
   activePanel,
@@ -318,6 +320,7 @@ function EliteCockpitHudInner({
         <DataRow label="System" value={activeStar.name} />
         <DataRow label="Frame" value={domGravityName} />
         <DataRow label="Clock" value={formatGameTime(gameState.gameTime).replace("Yr ", "")} />
+        <DataRow label="FPS" value={fps > 0 ? `${fps} fps` : "-- fps"} tone={fps > 0 && fps < 30 ? "tone-hot" : "tone-cyan"} />
         <DataRow label="Credits" value={`${gameState.playerCredits.toLocaleString()} cr`} tone="tone-cyan" />
         {approachGuidance && (
           <>
@@ -343,8 +346,7 @@ function EliteCockpitHudInner({
           <DataRow
             label="Warp Limit"
             value={`x${warpStatus.effective.toLocaleString()} — ${
-              warpStatus.reason === "burn" ? "ENGINE BURN"
-                : warpStatus.reason === "dock-hold" ? "DOCKING CAPTURE"
+              warpStatus.reason === "dock-hold" ? "DOCKING CAPTURE"
                 : warpStatus.reason === "proximity" ? "PROXIMITY"
                 : "AP GUARD"
             }`}

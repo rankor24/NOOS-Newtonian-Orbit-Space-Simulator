@@ -291,6 +291,7 @@ export function getDominantGravitySource(
 
   for (const body of bodies) {
     if (body.type === "star") continue;
+    if (body.gravitySource === false || body.type === "station" || body.type === "belt" || body.type === "ring") continue;
 
     const absPos = posCache ? getCachedPosition(posCache, body.id) : getAbsoluteBodyPosition(body.id, bodies, time);
     const dist = Math.hypot(shipX - absPos.x, shipY - absPos.y);
@@ -325,7 +326,8 @@ export function integrateSpacecraft(
   dt: number,
   throttlePercent: number,
   starMass: number = 1.989e30,
-  posCache?: BodyPosCache
+  posCache?: BodyPosCache,
+  consumeFuel: boolean = true
 ): ShipState {
   let { x, y, vx, vy, fuelLevel, dryMass, heading, engineThrust, engineIsp } = ship;
   const clampedThrottle = Math.max(-100, Math.min(100, throttlePercent));
@@ -358,16 +360,19 @@ export function integrateSpacecraft(
 
     // Add continuous thrust if operating thrusters
     const totalMass = dryMass + fuelLevel + getShipCargoMassKg(ship);
-    if (thrustScale > 0 && fuelLevel > 0) {
+    if (thrustScale > 0 && (fuelLevel > 0 || !consumeFuel)) {
       const requestedThrust = engineThrust * thrustScale;
-      const safeIsp = Math.max(1, engineIsp);
-      const requestedFuelBurn = (requestedThrust / (safeIsp * G0)) * subDt;
-      const fuelFractionAvailable = requestedFuelBurn > 0 ? Math.min(1, fuelLevel / requestedFuelBurn) : 1;
-      const effectiveThrust = requestedThrust * fuelFractionAvailable;
+      let effectiveThrust = requestedThrust;
+      if (consumeFuel) {
+        const safeIsp = Math.max(1, engineIsp);
+        const requestedFuelBurn = (requestedThrust / (safeIsp * G0)) * subDt;
+        const fuelFractionAvailable = requestedFuelBurn > 0 ? Math.min(1, fuelLevel / requestedFuelBurn) : 1;
+        effectiveThrust = requestedThrust * fuelFractionAvailable;
+        fuelLevel = Math.max(0, fuelLevel - requestedFuelBurn);
+      }
       const thrustAcc = effectiveThrust / totalMass;
       accX += thrustAcc * Math.cos(heading) * thrustDirection;
       accY += thrustAcc * Math.sin(heading) * thrustDirection;
-      fuelLevel = Math.max(0, fuelLevel - requestedFuelBurn);
     }
 
     // Standard Euler-Cromer integration
@@ -595,8 +600,7 @@ function patchCoastIfSoiChanges(
 ): ShipState | null {
   if (patchDepth <= 0) return result;
 
-  const endCache = buildBodyPositionCache(bodies, timeStart + dt);
-  const endDominant = getDominantGravitySource(result.x, result.y, bodies, timeStart + dt, starMass, endCache).body;
+  const endDominant = getDominantGravitySource(result.x, result.y, bodies, timeStart + dt, starMass).body;
   if (!endDominant || endDominant.id === startBody.id) return result;
 
   let low = 0;
@@ -608,8 +612,7 @@ function patchCoastIfSoiChanges(
     const midShip = propagateKeplerianCoast(startShip, startBody, bodies, timeStart, mid, starMass, 0);
     if (!midShip) return result;
 
-    const midCache = buildBodyPositionCache(bodies, timeStart + mid);
-    const midDominant = getDominantGravitySource(midShip.x, midShip.y, bodies, timeStart + mid, starMass, midCache).body;
+    const midDominant = getDominantGravitySource(midShip.x, midShip.y, bodies, timeStart + mid, starMass).body;
     if (midDominant?.id === startBody.id) {
       low = mid;
     } else {
@@ -647,9 +650,10 @@ export function predictShipRoute(
     if (i === stepsCount) break;
 
     if (Math.abs(throttlePercent) <= 0.001) {
-      const cache = posCache ?? buildBodyPositionCache(bodies, timeStart + i * dt);
-      const dominant = getDominantGravitySource(tempShip.x, tempShip.y, bodies, timeStart + i * dt, starMass, cache);
-      const coastShip = propagateKeplerianCoast(tempShip, dominant.body || bodies[0], bodies, timeStart + i * dt, dt, starMass);
+      const sampleTime = timeStart + i * dt;
+      const cache = i === 0 ? posCache : undefined;
+      const dominant = getDominantGravitySource(tempShip.x, tempShip.y, bodies, sampleTime, starMass, cache);
+      const coastShip = propagateKeplerianCoast(tempShip, dominant.body || bodies[0], bodies, sampleTime, dt, starMass);
       if (coastShip) {
         tempShip = coastShip;
         continue;

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.5
  */
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, type SetStateAction } from "react";
 import { StarSystemCanvas } from "./components/StarSystemCanvas";
 import { EliteCockpitHud } from "./components/EliteCockpitHud";
 import { STARS, AU, getOrCreatePlayableStar } from "./data/stars";
@@ -120,7 +120,8 @@ const [isThrusting, setIsThrusting] = useState<boolean>(false);
 // Written every tick by the autopilot; the HUD reads it via the 10 Hz snapshot below.
 const approachGuidanceRef = useRef<ApproachGuidance | null>(null);
 // Effective warp actually applied this tick and why it was limited, for the HUD readout.
-const warpStatusRef = useRef<{ effective: number; reason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null }>({ effective: 1, reason: null });
+const warpStatusRef = useRef<{ effective: number; reason: "dock-hold" | "ap-guard" | "proximity" | null }>({ effective: 1, reason: null });
+const fpsCounterRef = useRef({ frames: 0, startedAt: performance.now(), value: 0 });
 const [dockingClearance, setDockingClearance] = useState<{ bodyId: string; portId: string; holdStartedAt: number | null } | null>(null);
 const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
 
@@ -147,7 +148,19 @@ ownedShips: state.ownedShips.map((entry) => entry.id === state.activeShipId ? { 
 
 // References for rapid simulation tick updates to avoid closure issues
 const stateRef = useRef(gameState);
-stateRef.current = gameState;
+const commitGameState = useCallback((updater: SetStateAction<GameState>, renderNow = true) => {
+  const next = typeof updater === "function"
+    ? (updater as (state: GameState) => GameState)(stateRef.current)
+    : updater;
+
+  stateRef.current = next;
+
+  if (renderNow) {
+    setGameState(next);
+  }
+
+  return next;
+}, []);
 const autopilotRef = useRef(autopilotMode);
 autopilotRef.current = autopilotMode;
 const dockingClearanceRef = useRef(dockingClearance);
@@ -159,14 +172,23 @@ const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: fal
 const [hudSnapshot, setHudSnapshot] = useState<{
   state: GameState;
   guidance: ApproachGuidance | null;
-  warp: { effective: number; reason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null };
-}>(() => ({ state: gameState, guidance: null, warp: { effective: 1, reason: null } }));
+  warp: { effective: number; reason: "dock-hold" | "ap-guard" | "proximity" | null };
+  fps: number;
+}>(() => ({ state: gameState, guidance: null, warp: { effective: 1, reason: null }, fps: 0 }));
 useEffect(() => {
   const id = setInterval(() => {
-    setHudSnapshot({ state: stateRef.current, guidance: approachGuidanceRef.current, warp: warpStatusRef.current });
+    setGameState(stateRef.current);
+    setHudSnapshot({
+      state: stateRef.current,
+      guidance: approachGuidanceRef.current,
+      warp: warpStatusRef.current,
+      fps: fpsCounterRef.current.value,
+    });
   }, 100);
   return () => clearInterval(id);
 }, []);
+
+const getFrameState = useCallback(() => stateRef.current, []);
 
 useEffect(() => {
   const persist = () => {
@@ -277,6 +299,14 @@ const now = performance.now();
 // multiplies into a huge game-time jump at high warp (1 s stall x 86400 = a day).
 const realDt = Math.min((now - lastTime) / 1000, 0.1);
 lastTime = now;
+const fpsCounter = fpsCounterRef.current;
+fpsCounter.frames += 1;
+const fpsElapsed = now - fpsCounter.startedAt;
+if (fpsElapsed >= 500) {
+fpsCounter.value = Math.round((fpsCounter.frames / fpsElapsed) * 1000);
+fpsCounter.frames = 0;
+fpsCounter.startedAt = now;
+}
 
 // Ensure stable framerate ticks
 if (realDt <= 0) {
@@ -285,7 +315,7 @@ return;
 }
 
 const current = stateRef.current;
-let gameDt = realDt * current.timeScale; // Game seconds elapsed; burn phases may clamp this below.
+let gameDt = realDt * current.timeScale; // Game seconds elapsed; safety guards may clamp this below.
 
     // Build position cache once per tick â€” all physics calls reuse this
     const posCache = buildBodyPositionCache(systemBodiesRef.current, current.gameTime);
@@ -303,7 +333,7 @@ if (arrivalStar) {
 const dest = getOrCreatePlayableStar(arrivalStar.id);
 const destinationMarkets = generateMarketsForStar(arrivalStar.id);
 setAutopilotMode("none");
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 activeStarId: arrivalStar.id,
 flightMode: "local-system",
@@ -330,13 +360,13 @@ stats: { ...prev.playerProfile.stats, starsVisited: prev.playerProfile.stats.sta
 }));
 addConsoleLog(`Navigation: Entered ${arrivalStar.name} local frame. System bodies resolved from star database.`, "success");
 } else {
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 gameTime: current.gameTime + gameDt,
 activeStarId: current.interstellar?.originStarId ?? prev.activeStarId,
 interstellar: current.interstellar ? { ...current.interstellar, xLy: nextX, yLy: nextY } : null,
 playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt },
-}));
+}), false);
 }
 
     frameId = requestAnimationFrame(tick);
@@ -359,7 +389,7 @@ playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.tot
           setAutopilotMode("none");
         }
         setIsThrusting(false);
-        setGameState((prev) => ({
+        commitGameState((prev) => ({
           ...prev,
           gameTime: current.gameTime + gameDt,
           miningTargetId: null,
@@ -372,7 +402,7 @@ playerProfile: { ...prev.playerProfile, totalPlayTimeSec: prev.playerProfile.tot
             vy: dockVelocity.vy,
             throttlePercent: 0,
           },
-        }));
+        }), false);
 
         frameId = requestAnimationFrame(tick);
         return;
@@ -619,16 +649,11 @@ proximityGuardSeconds = proximityGuardSeconds === null ? guard : Math.min(proxim
 }
 }
 
-let warpLimitReason: "dock-hold" | "burn" | "ap-guard" | "proximity" | null = null;
+let warpLimitReason: "dock-hold" | "ap-guard" | "proximity" | null = null;
 if (dockingClearanceRef.current?.holdStartedAt != null && current.timeScale > 1) {
 // Docking control restricts time compression: the 10 s alignment hold must pass in real time.
 gameDt = realDt;
 warpLimitReason = "dock-hold";
-} else if (fuelSimRef.current && Math.abs(throttleCommand) > 0.001 && current.timeScale > 600) {
-// Burns warp-clamp to x600 so a full tank is not consumed in a couple of real seconds.
-// With fuel sim disabled there is nothing to protect, so warp runs unrestricted.
-gameDt = realDt * 600;
-warpLimitReason = "burn";
 }
 if (autopilotTimeGuardSeconds !== null && gameDt > autopilotTimeGuardSeconds) {
 // Auto warp-down near the target: never step past ~5% of time-to-target per frame.
@@ -655,6 +680,9 @@ finalHeading += manualDirection * headingStep;
 
 // --- 2. Integrate Spacecraft Positions ---
 let updatedShip = { ...current.ship, heading: finalHeading };
+if (!fuelSimRef.current) {
+  updatedShip.fuelLevel = updatedShip.maxFuel;
+}
 
 // Solar battery calculations: panels gather photons based on star distance
 const distToSun = Math.hypot(current.ship.x, current.ship.y);
@@ -669,7 +697,8 @@ const batteryDischargeRate = (0.003 + throttleLoad * 0.035) * realDt;
 let netBattery = Math.min(current.ship.maxBattery, Math.max(0, current.ship.battery + batteryChargeRate - batteryDischargeRate));
 
 const isPowerLocked = netBattery <= 0.1;
-const actualThrottlePercent = updatedShip.fuelLevel > 0 && !isPowerLocked
+const hasUsablePropellant = !fuelSimRef.current || updatedShip.fuelLevel > 0;
+const actualThrottlePercent = hasUsablePropellant && !isPowerLocked
 ? Math.max(-100, Math.min(100, throttleCommand * enginePowerScale))
 : 0;
 
@@ -695,8 +724,10 @@ updatedShip.battery = netBattery;
       current.gameTime,
       gameDt,
       actualThrottlePercent,
-      activeStarRef.current.mass * 1.989e30
-// No posCache here â€” sub-stepping advances sim time, cache would be frozen at t=gameTime
+      activeStarRef.current.mass * 1.989e30,
+      // No posCache here: sub-stepping advances sim time, cache would be frozen at t=gameTime.
+      undefined,
+      fuelSimRef.current
 );
 
 if (!fuelSimRef.current) {
@@ -726,7 +757,7 @@ return { star, dist, alignment };
 .sort((a, b) => (b.alignment - a.alignment) || (a.dist - b.dist))[0]?.star || null;
 
 setAutopilotMode("none");
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 flightMode: "interstellar",
 interstellar: {
@@ -803,7 +834,7 @@ ship: { ...updatedShip, throttlePercent: 0 },
           setAutopilotMode("none");
           setIsThrusting(false);
           setDockingClearance(null);
-          setGameState((prev) => ({
+          commitGameState((prev) => ({
             ...prev,
             gameTime: current.gameTime + gameDt,
             isDocked: true,
@@ -876,7 +907,7 @@ playerProfileVal = awardCareerXp({
 stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined + minedTons },
 }, "mining", Math.max(1, Math.round(minedTons * 20)));
 }
-setGameState((g) => ({ ...g, miningTargetId: null }));
+commitGameState((g) => ({ ...g, miningTargetId: null }));
 addConsoleLog("Drill Computer: Cargo inventory reached max tonnage capacity. Drills disengaged.", "warning");
 } else {
 updatedShip.cargo = updatedCargo;
@@ -886,11 +917,11 @@ stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined 
 }, "mining", Math.max(1, Math.round(harvestRate * 20)));
 }
 } else {
-setGameState((g) => ({ ...g, miningTargetId: null }));
+commitGameState((g) => ({ ...g, miningTargetId: null }));
 addConsoleLog("Drill Computer: Cargo inventory is completely full.", "warning");
 }
 } else {
-setGameState((g) => ({ ...g, miningTargetId: null }));
+commitGameState((g) => ({ ...g, miningTargetId: null }));
 addConsoleLog("Drill Computer: Signal lost. Mining lasers disengaged (out of range).", "warning");
 }
 }
@@ -986,7 +1017,7 @@ addConsoleLog(`CRUNCH! Spaceship breached boundary layer around ${crashedBodyNam
 // Standard static/semi-periodic random increments
 const updatedTimeValue = current.gameTime + gameDt;
 
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 gameTime: updatedTimeValue,
 ship: updatedShip,
@@ -999,7 +1030,7 @@ isDocked: !!crashDockBodyId,
 dockedBodyId: crashDockBodyId,
 dockedPortId: crashDockPortId,
 } : {}),
-}));
+}), false);
 
 frameId = requestAnimationFrame(tick);
 };
@@ -1011,7 +1042,7 @@ return () => cancelAnimationFrame(frameId);
 // Command logs helper
 const addConsoleLog = (text: string, type: "info" | "success" | "warning" = "info") => {
 const formatted = formatGameTime(stateRef.current.gameTime);
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 logs: [
 { timestamp: formatted, text, type },
@@ -1043,7 +1074,7 @@ addConsoleLog("Logistics: Max chassis freight weight capacity exceeded.", "warni
 return;
 }
 
-setGameState((prev) => {
+commitGameState((prev) => {
 const copyMarkets = { ...prev.markets };
 const copyLocal = { ...copyMarkets[portId] };
 copyLocal[resourceId] = {
@@ -1086,7 +1117,7 @@ if (shipCount < amount) return;
 
 const payout = resMarket.sellPrice * amount;
 
-setGameState((prev) => {
+commitGameState((prev) => {
 const copyMarkets = { ...prev.markets };
 const copyLocal = { ...copyMarkets[portId] };
 copyLocal[resourceId] = {
@@ -1147,7 +1178,7 @@ addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName 
 const handleUndockActivate = () => {
 setAutopilotMode("none");
 setIsThrusting(false);
-setGameState((prev) => {
+commitGameState((prev) => {
 const dockBody = systemBodiesRef.current.find((body) => body.id === prev.dockedBodyId);
 if (!dockBody) {
 return {
@@ -1196,10 +1227,10 @@ addConsoleLog(`âœ— Spaceport clamps released. Attitude thrusters ready. Spac
 const handleToggleMining = () => {
 if (!selectedBody) return;
 if (gameState.miningTargetId === selectedBody.id) {
-setGameState((prev) => ({ ...prev, miningTargetId: null }));
+commitGameState((prev) => ({ ...prev, miningTargetId: null }));
 addConsoleLog("Drill Computer: Thermal laser miners offline.", "info");
 } else {
-setGameState((prev) => ({ ...prev, miningTargetId: selectedBody.id }));
+commitGameState((prev) => ({ ...prev, miningTargetId: selectedBody.id }));
 addConsoleLog(`Drill Computer: Focused thermal drills pointing at ${selectedBody.name}. Excelsior siphons armed.`, "success");
 }
 };
@@ -1207,7 +1238,7 @@ addConsoleLog(`Drill Computer: Focused thermal drills pointing at ${selectedBody
 // Accepting Space commission contracts
 const handleAcceptContract = (id: string) => {
 const target = gameState.contracts.find((c) => c.id === id);
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 ship: target?.type === "passenger" ? { ...prev.ship, passengerCount: prev.ship.passengerCount + (target.passengerCount || 0) } : prev.ship,
 contracts: prev.contracts.map((c) => (c.id === id ? { ...c, accepted: true } : c)),
@@ -1220,7 +1251,7 @@ const handleCompleteContract = (id: string) => {
 const contract = gameState.contracts.find((c) => c.id === id);
 if (!contract || !contract.accepted || contract.completed) return;
 
-setGameState((prev) => {
+commitGameState((prev) => {
 const copyShipCargo = { ...prev.ship.cargo };
 if (contract.type === "delivery" && contract.cargoType) {
 copyShipCargo[contract.cargoType] = Math.max(0, (copyShipCargo[contract.cargoType] || 0) - (contract.amount || 0));
@@ -1258,7 +1289,7 @@ addConsoleLog("Engineering: Insufficient credit allocations to authorize bluepri
 return;
 }
 
-setGameState((prev) => {
+commitGameState((prev) => {
 const updatedShipState = { ...findUpgrade.modifier(prev.ship), installedUpgradeIds: [...prev.ship.installedUpgradeIds, upgradeId] };
 return {
 ...prev,
@@ -1282,7 +1313,7 @@ return;
 }
 const owned = createOwnedShipFromCatalog(modelId, gameState.dockedPortId);
 if (!owned) return;
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 playerCredits: prev.playerCredits - model.baseCost,
 ownedShips: [...prev.ownedShips, owned],
@@ -1298,7 +1329,7 @@ if (target.homePortId !== gameState.dockedPortId) {
 addConsoleLog("Shipyard control: requested hull is not berthed at this station/base.", "warning");
 return;
 }
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 activeShipId: target.id,
 ship: { ...target.ship, x: prev.ship.x, y: prev.ship.y, vx: prev.ship.vx, vy: prev.ship.vy, heading: prev.ship.heading },
@@ -1325,7 +1356,7 @@ updatedCargo["he3"] = Math.max(0, currentHe3 - 1);
 const highOrbitPos = 0.5 * AU;
 const destinationMarkets = generateMarketsForStar(starId);
 
-setGameState((prev) => ({
+commitGameState((prev) => ({
 ...prev,
 activeStarId: starId,
 selectedBodyId: dest.planets[0]?.id || null, // lock first planet of new star
@@ -1362,7 +1393,7 @@ setPowerDistribution,
 autopilotMode,
 selectedBodyExists: !!selectedBody,
 setAutopilotMode,
-setGameState,
+setGameState: commitGameState,
 setIsThrusting,
 addConsoleLog,
 stateRef,
@@ -1372,13 +1403,13 @@ pressedKeysRef.current = pressedKeys;
 const mapView = (
   <StarSystemCanvas
     bodies={systemBodies}
-    ship={gameState.ship}
-    selectedBodyId={gameState.selectedBodyId}
-    onSelectBody={(id) => setGameState((g) => ({ ...g, selectedBodyId: id }))}
-    gameTime={gameState.gameTime}
-    isThrusting={Math.abs(gameState.ship.throttlePercent) > 0 || autopilotMode !== "none"}
-    miningActive={gameState.miningTargetId !== null}
-    miningTargetId={gameState.miningTargetId}
+    getFrameState={getFrameState}
+    selectedBodyId={hudState.selectedBodyId}
+    onSelectBody={(id) => commitGameState((g) => ({ ...g, selectedBodyId: id }))}
+    isDocked={hudState.isDocked}
+    isThrusting={Math.abs(hudState.ship.throttlePercent) > 0 || autopilotMode !== "none"}
+    miningActive={hudState.miningTargetId !== null}
+    miningTargetId={hudState.miningTargetId}
     starColor={activeStar.color}
     uiTheme={uiTheme}
     cameraModeOverride={mapMode}
@@ -1397,7 +1428,7 @@ const activePanel = (
     dockedPortInventory={dockedPortInventory}
     onSelectProfile={(profileId) => {
       const loaded = loadCommanderProfile(profileId);
-      if (loaded?.ship?.cargo) setGameState(migrateLoadedState(loaded));
+      if (loaded?.ship?.cargo) commitGameState(migrateLoadedState(loaded));
     }}
     onSaveProfile={() => {
       const synced = syncOwnedShips(gameState);
@@ -1409,7 +1440,7 @@ const activePanel = (
       const name = window.prompt("Commander name?", "Commander") || "Commander";
       const fresh = createInitialState(name);
       saveCommanderProfile(fresh, fresh.profileId);
-      setGameState(fresh);
+      commitGameState(fresh);
       setProfileSummaries(listCommanderProfiles());
     }}
     onDeleteProfile={() => {
@@ -1418,7 +1449,7 @@ const activePanel = (
       const next = listCommanderProfiles();
       setProfileSummaries(next);
       const loaded = next[0] ? loadCommanderProfile(next[0].id) : null;
-      if (loaded?.ship?.cargo) setGameState(migrateLoadedState(loaded));
+      if (loaded?.ship?.cargo) commitGameState(migrateLoadedState(loaded));
     }}
     onBuy={executeBuy}
     onSell={executeSell}
@@ -1433,7 +1464,7 @@ const activePanel = (
         addConsoleLog("Refuel control: insufficient credits for propellant transfer.", "warning");
         return;
       }
-      setGameState((prev) => ({
+      commitGameState((prev) => ({
         ...prev,
         playerCredits: prev.playerCredits - cost,
         ship: { ...prev.ship, fuelLevel: prev.ship.maxFuel },
@@ -1445,7 +1476,7 @@ const activePanel = (
       addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}Â¢.`, "success");
     }}
     onToggleMining={handleToggleMining}
-    onSelectPort={(portId) => setGameState((prev) => prev.isDocked ? { ...prev, dockedPortId: portId } : prev)}
+    onSelectPort={(portId) => commitGameState((prev) => prev.isDocked ? { ...prev, dockedPortId: portId } : prev)}
     onBuyShip={handleBuyShip}
     onActivateShip={handleActivateOwnedShip}
     onUnlockUpgrade={handleUnlockUpgrade}
@@ -1461,7 +1492,7 @@ const activePanel = (
         onSelectProfile={(profileId) => {
           const loaded = loadCommanderProfile(profileId);
           if (loaded?.ship?.cargo) {
-            setGameState(migrateLoadedState(loaded));
+            commitGameState(migrateLoadedState(loaded));
             setIsInMainMenu(false);
           }
         }}
@@ -1474,7 +1505,7 @@ const activePanel = (
         onCreateProfile={({ name, starId, profession }) => {
           const newState = createCustomInitialState(name, starId, profession);
           saveCommanderProfile(newState, newState.profileId);
-          setGameState(newState);
+          commitGameState(newState);
           setProfileSummaries(listCommanderProfiles());
           setIsInMainMenu(false);
         }}
@@ -1511,6 +1542,7 @@ domGravityName={domGravity.body ? domGravity.body.name : activeStar.name}
 relativeOrbit={relativeOrbit}
 approachGuidance={hudSnapshot.guidance}
 warpStatus={hudSnapshot.warp}
+fps={hudSnapshot.fps}
 mapMode={mapMode}
 setMapMode={setMapMode}
 activePanel={activePanel}
@@ -1524,9 +1556,9 @@ autopilotMode={autopilotMode}
 setAutopilotMode={setAutopilotMode}
 setThrottlePercent={setThrottlePercent}
 setPowerDistribution={setPowerDistribution}
-setTimeScale={(value) => setGameState((g) => ({ ...g, timeScale: value }))}
+setTimeScale={(value) => commitGameState((g) => ({ ...g, timeScale: value }))}
 onSetShipHeading={setShipHeading}
-onClearTarget={() => setGameState((g) => ({ ...g, selectedBodyId: null }))}
+onClearTarget={() => commitGameState((g) => ({ ...g, selectedBodyId: null }))}
 onDock={handleDockActivate}
 onUndock={handleUndockActivate}
 onToggleMining={handleToggleMining}

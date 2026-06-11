@@ -16,7 +16,7 @@ interface UseCockpitControlsInput {
   autopilotMode: AutopilotMode;
   selectedBodyExists: boolean;
   setAutopilotMode: Dispatch<SetStateAction<AutopilotMode>>;
-  setGameState: Dispatch<SetStateAction<GameState>>;
+  setGameState: (updater: SetStateAction<GameState>, renderNow?: boolean) => GameState;
   setIsThrusting: Dispatch<SetStateAction<boolean>>;
   addConsoleLog: (text: string, type?: "info" | "success" | "warning") => void;
   stateRef: MutableRefObject<GameState>;
