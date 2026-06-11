@@ -24,6 +24,9 @@ interface CanvasProps {
   uiTheme?: "amber" | "blue" | "green" | "red";
   cameraModeOverride?: "ship" | "target" | "star" | "fit";
   hideCameraControls?: boolean;
+  /** Screen-space margins (px) hidden behind the HUD, so the camera focuses the
+   *  visible band instead of the geometric centre of the full canvas. */
+  viewportInsets?: { top?: number; bottom?: number; left?: number; right?: number };
 }
 type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target";
 
@@ -351,7 +354,16 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   cameraModeOverride,
   hideCameraControls = false,
   autopilotMode = "none",
+  viewportInsets,
 }) => {
+  const insetTop = viewportInsets?.top ?? 0;
+  const insetBottom = viewportInsets?.bottom ?? 0;
+  const insetLeft = viewportInsets?.left ?? 0;
+  const insetRight = viewportInsets?.right ?? 0;
+  // Projection centre of the unobstructed band. toScreen/toWorld and every centring
+  // calc route through these so panning, zoom-to-cursor and FIT all stay consistent.
+  const viewCenterX = (width: number) => insetLeft + (width - insetLeft - insetRight) / 2;
+  const viewCenterY = (height: number) => insetTop + (height - insetTop - insetBottom) / 2;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [baseZoomExponent, setZoomExponent] = useState(DEFAULT_ZOOM_EXPONENT);
   const [cameraMode, setCameraMode] = useState<CameraMode>("star");
@@ -404,7 +416,9 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     } else if (cameraMode === "target" && selectedBodyId) {
       modeCenter = getBodyPos(selectedBodyId);
     } else if (cameraMode === "fit") {
-      // Fit target is selectedBody if exists, or closest celestial body (non-star preferred)
+      // Frame the ship together with its point of interest: the selected target if
+      // there is one, otherwise the nearest non-star body. Fit to a bounding box so
+      // both always sit inside the unobstructed band, not behind the HUD.
       let fitTarget = selectedBody;
       if (!fitTarget && bodies.length > 0) {
         const candidateBodies = bodies.filter(b => b.type !== 'star');
@@ -420,29 +434,23 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
 
       if (fitTarget) {
         const targetPos = getBodyPos(fitTarget.id);
-        modeCenter = {
-          x: (ship.x + targetPos.x) / 2,
-          y: (ship.y + targetPos.y) / 2,
-        };
-
-        const dX = Math.abs(ship.x - targetPos.x);
-        const dY = Math.abs(ship.y - targetPos.y);
-
         const boundingRadius = fitTarget.radius ?? 1000;
-        const paddingMeters = Math.max(boundingRadius * 4, 30_000); // minimum 30km padding so they aren't right on top
-        const spanX = dX + paddingMeters;
-        const spanY = dY + paddingMeters;
+        // Bounding box around ship + target (+ the target's body radius so a large
+        // planet is not clipped), centred on the box midpoint.
+        const minX = Math.min(ship.x, targetPos.x - boundingRadius);
+        const maxX = Math.max(ship.x, targetPos.x + boundingRadius);
+        const minY = Math.min(ship.y, targetPos.y - boundingRadius);
+        const maxY = Math.max(ship.y, targetPos.y + boundingRadius);
+        modeCenter = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
 
-        // Dynamic viewport scale fitting
-        const canvas = canvasRef.current;
-        const rect = canvas?.getBoundingClientRect();
-        const width = rect?.width || canvas?.clientWidth || 800;
-        const height = rect?.height || canvas?.clientHeight || 500;
+        const { width, height } = getCanvasViewport();
+        const safeWidth = Math.max(120, width - insetLeft - insetRight);
+        const safeHeight = Math.max(120, height - insetTop - insetBottom);
+        // 18% padding on each side so the pair never hugs the band edges.
+        const spanX = Math.max(1, maxX - minX) / 0.82;
+        const spanY = Math.max(1, maxY - minY) / 0.82;
+        const targetScale = Math.min(safeWidth / spanX, safeHeight / spanY);
 
-        const requiredScaleX = (width * 0.65) / spanX;
-        const requiredScaleY = (height * 0.65) / spanY;
-        const targetScale = Math.min(requiredScaleX, requiredScaleY);
-        
         modeExponent = clampZoomExponent(Math.log10(targetScale));
         modeScale = Math.pow(10, modeExponent);
       } else {
@@ -454,7 +462,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     lastRenderedScaleRef.current = modeScale;
 
     return { center: modeCenter, scale: modeScale, exponent: modeExponent };
-  }, [cameraMode, cameraCenter, baseScale, baseZoomExponent, ship.x, ship.y, selectedBodyId, selectedBody, bodies, gameTime]);
+  }, [cameraMode, cameraCenter, baseScale, baseZoomExponent, ship.x, ship.y, selectedBodyId, selectedBody, bodies, gameTime, insetTop, insetBottom, insetLeft, insetRight]);
 
   const scale = resolved.scale;
   const zoomExponent = resolved.exponent;
@@ -507,13 +515,13 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   }, [bodies, miningTargetId, selectedBodyId, ship.systemScannerRange, revealEpoch]);
 
   const toScreen = (world: Point, center: Point, width: number, height: number, currentScale = scale): Point => ({
-    x: width / 2 + (world.x - center.x) * currentScale,
-    y: height / 2 + (world.y - center.y) * currentScale,
+    x: viewCenterX(width) + (world.x - center.x) * currentScale,
+    y: viewCenterY(height) + (world.y - center.y) * currentScale,
   });
 
   const toWorld = (screen: Point, center: Point, width: number, height: number, currentScale = scale): Point => ({
-    x: center.x + (screen.x - width / 2) / currentScale,
-    y: center.y + (screen.y - height / 2) / currentScale,
+    x: center.x + (screen.x - viewCenterX(width)) / currentScale,
+    y: center.y + (screen.y - viewCenterY(height)) / currentScale,
   });
 
   const getCanvasViewport = () => {
@@ -604,7 +612,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     const inner = feature.innerRadius * scale;
     const outer = feature.outerRadius * scale;
     const viewportRadius = Math.hypot(width, height) / 2;
-    const featureCenterDist = Math.hypot(pt.x - width / 2, pt.y - height / 2);
+    const featureCenterDist = Math.hypot(pt.x - viewCenterX(width), pt.y - viewCenterY(height));
     const annulusCanTouchViewport = outer >= featureCenterDist - viewportRadius && inner <= featureCenterDist + viewportRadius;
     if (outer < 2 || !annulusCanTouchViewport) return;
 
@@ -681,8 +689,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       const ellipseY = body.semiMajorAxis * minorAxisFactor * Math.sin(angle);
       const worldX = parentPos.x + ellipseX * cos - ellipseY * sin;
       const worldY = parentPos.y + ellipseX * sin + ellipseY * cos;
-      const px = width / 2 + (worldX - center.x) * scale;
-      const py = height / 2 + (worldY - center.y) * scale;
+      const px = viewCenterX(width) + (worldX - center.x) * scale;
+      const py = viewCenterY(height) + (worldY - center.y) * scale;
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
     }
@@ -1335,8 +1343,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
           const nextExponent = clampZoomExponent(Math.log10(oldScale * zoomRatio));
           const newScale = Math.pow(10, nextExponent);
           setCameraCenter({
-            x: currentRenderedCenter.x + (pointer.x - width / 2) * (1 / oldScale - 1 / newScale),
-            y: currentRenderedCenter.y + (pointer.y - height / 2) * (1 / oldScale - 1 / newScale),
+            x: currentRenderedCenter.x + (pointer.x - viewCenterX(width)) * (1 / oldScale - 1 / newScale),
+            y: currentRenderedCenter.y + (pointer.y - viewCenterY(height)) * (1 / oldScale - 1 / newScale),
           });
           return nextExponent;
         });

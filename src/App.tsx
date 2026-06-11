@@ -1383,6 +1383,7 @@ const mapView = (
     uiTheme={uiTheme}
     cameraModeOverride={mapMode}
     autopilotMode={autopilotMode}
+    viewportInsets={{ top: 72, bottom: 264 }}
   />
 );
 
