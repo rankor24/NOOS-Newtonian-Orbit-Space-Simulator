@@ -6,11 +6,11 @@ import { ShipyardCatalogEntry } from "../../utils/shipManagement";
 const MarketPanel = lazy(() => import("../../components/MarketPanel").then((m) => ({ default: m.MarketPanel })));
 const ShipyardPanel = lazy(() => import("../../components/ShipyardPanel").then((m) => ({ default: m.ShipyardPanel })));
 const ContractsPanel = lazy(() => import("../../components/ContractsPanel").then((m) => ({ default: m.ContractsPanel })));
-const CommanderPanel = lazy(() => import("../../components/CommanderPanel").then((m) => ({ default: m.CommanderPanel })));
-const ProfilePanel = lazy(() => import("../../components/ProfilePanel").then((m) => ({ default: m.ProfilePanel })));
 
 const LazyPanelFallback = () => (
-  <div className="rounded-xl border border-stone-800 bg-stone-900/70 p-4 text-xs text-stone-500">Loading module...</div>
+  <div className="elite-terminal-screen">
+    <div className="elite-terminal-note">Loading station terminal...</div>
+  </div>
 );
 
 interface GamePanelsProps {
@@ -43,14 +43,9 @@ interface GamePanelsProps {
 export function GamePanels({
   activeTab,
   gameState,
-  profileSummaries,
   systemBodies,
   shipyardCatalog,
   dockedPortInventory,
-  onSelectProfile,
-  onSaveProfile,
-  onCreateProfile,
-  onDeleteProfile,
   onBuy,
   onSell,
   onDock,
@@ -69,17 +64,6 @@ export function GamePanels({
   return (
     <Suspense fallback={<LazyPanelFallback />}>
       <>
-        <div className="space-y-4 mb-4">
-          <ProfilePanel
-            currentProfileId={gameState.profileId}
-            profiles={profileSummaries}
-            onSelectProfile={onSelectProfile}
-            onSaveProfile={onSaveProfile}
-            onCreateProfile={onCreateProfile}
-            onDeleteProfile={onDeleteProfile}
-          />
-          <CommanderPanel commanderName={gameState.commanderName} profile={gameState.playerProfile} credits={gameState.playerCredits} />
-        </div>
         {activeTab === "market" && (
           <MarketPanel
             gameState={gameState}

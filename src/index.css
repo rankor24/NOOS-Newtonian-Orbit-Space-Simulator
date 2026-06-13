@@ -916,25 +916,45 @@ input[type="range"] {
 
 .elite-docking-backdrop {
   z-index: 30;
-  background:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.9), rgba(3, 10, 14, 0.9)),
-    rgba(0, 0, 0, 0.84);
+  display: block;
+  padding: 0;
+  background: transparent;
+  pointer-events: none;
 }
 
 .elite-docking-modal {
+  position: absolute;
+  top: 3.6rem;
+  right: 1rem;
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: min(34rem, calc(100dvh - 8rem));
   border-color: var(--elite-cyan);
+  background:
+    linear-gradient(180deg, rgba(1, 12, 15, 0.96), rgba(0, 0, 0, 0.94)),
+    rgba(0, 0, 0, 0.94);
+  box-shadow:
+    0 0 0 1px rgba(38, 217, 255, 0.12),
+    0 0 28px rgba(38, 217, 255, 0.12);
+  pointer-events: auto;
+  overflow: hidden;
 }
 
-.elite-docking-layout {
+.elite-docking-header {
+  min-height: 2.5rem;
+  padding: 0.55rem 0.75rem;
+}
+
+.elite-docking-header button {
+  border-color: rgba(255, 67, 95, 0.55);
+  color: var(--elite-red);
+}
+
+.elite-docking-body {
   display: grid;
-  grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
-  min-height: calc(100% - 3rem);
-}
-
-.elite-docking-sidebar {
-  border-right: 1px solid var(--elite-line);
-  padding: 1.25rem;
-  background: rgba(0, 12, 18, 0.42);
+  gap: 0.65rem;
+  max-height: calc(min(34rem, 100dvh - 8rem) - 2.5rem);
+  overflow: auto;
+  padding: 0.75rem;
 }
 
 .elite-docking-kicker,
@@ -946,126 +966,105 @@ input[type="range"] {
   text-transform: uppercase;
 }
 
-.elite-docking-sidebar h2,
-.elite-dock-services-hero h2 {
-  margin: 0.45rem 0 0;
-  font-size: 1.4rem;
-  color: var(--elite-cyan);
-}
-
-.elite-docking-sidebar > p,
-.elite-dock-services-hero p {
-  margin: 0.35rem 0 0;
-  color: var(--elite-text);
-  font-size: 0.82rem;
-}
-
-.elite-docking-status,
-.elite-docking-alert {
+.elite-docking-title-row {
   display: grid;
-  gap: 0.2rem;
-  margin-top: 1rem;
-  padding: 0.85rem 0.95rem;
-  border: 1px solid var(--elite-line);
-  background: rgba(255, 255, 255, 0.03);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.75rem;
 }
 
-.elite-docking-status span,
-.elite-docking-alert {
-  color: var(--elite-muted);
+.elite-docking-title-row h2,
+.elite-dock-services-hero h2 {
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+  color: var(--elite-cyan);
+  line-height: 1.15;
+}
+
+.elite-docking-title-row strong {
+  justify-self: end;
+  border: 1px solid var(--elite-line);
+  padding: 0.45rem 0.55rem;
+  color: var(--elite-accent);
   font-size: 0.68rem;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.elite-docking-status strong {
-  color: var(--elite-text);
-  font-size: 0.9rem;
 }
 
 .elite-docking-alert {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border: 1px solid rgba(22, 242, 139, 0.32);
+  background: rgba(22, 242, 139, 0.06);
+  padding: 0.55rem 0.65rem;
   color: var(--elite-green);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .elite-docking-alert.is-hot {
   color: var(--elite-red);
   border-color: rgba(255, 67, 95, 0.5);
+  background: rgba(255, 67, 95, 0.08);
+}
+
+.elite-docking-link,
+.elite-docking-stage {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.elite-docking-ship-card {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.85rem;
+  border: 1px solid var(--elite-line);
+  background: rgba(0, 0, 0, 0.26);
+  padding: 0.7rem;
+}
+
+.elite-docking-ship-card img {
+  width: 7.5rem;
+  height: auto;
+  justify-self: center;
+  filter: drop-shadow(0 0 8px rgba(38, 217, 255, 0.55));
+}
+
+.elite-docking-ship-card span {
+  display: block;
+  color: var(--elite-muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.elite-docking-ship-card strong {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--elite-text);
+  font-size: 0.88rem;
+}
+
+.elite-docking-ship-card.is-complete {
+  border-color: rgba(22, 242, 139, 0.34);
 }
 
 .elite-docking-log {
-  margin-top: 1rem;
   border: 1px solid var(--elite-line);
   background: rgba(0, 0, 0, 0.28);
-  padding: 0.85rem 0.95rem;
-  max-height: 20rem;
+  padding: 0.65rem 0.75rem;
+  max-height: 7.5rem;
   overflow: auto;
 }
 
 .elite-docking-log p {
-  margin: 0 0 0.65rem;
+  margin: 0 0 0.45rem;
   color: var(--elite-text);
-  font-size: 0.76rem;
-  line-height: 1.45;
-}
-
-.elite-docking-main {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-}
-
-.elite-docking-phase {
-  width: min(54rem, 100%);
-  display: grid;
-  gap: 1.25rem;
-}
-
-.elite-docking-phase-copy h3 {
-  margin: 0.35rem 0 0;
-  font-size: 1.5rem;
-  color: var(--elite-text);
-}
-
-.elite-docking-phase-copy p {
-  margin: 0.45rem 0 0;
-  color: var(--elite-muted);
-  font-size: 0.86rem;
-  line-height: 1.5;
-}
-
-.elite-docking-arrival-card {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-
-.elite-docking-arrival-card > div,
-.elite-dock-services-meta > div {
-  border: 1px solid var(--elite-line);
-  padding: 0.9rem;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.elite-docking-arrival-card span,
-.elite-dock-services-meta span {
-  display: block;
-  color: var(--elite-muted);
-  font-size: 0.68rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.elite-docking-arrival-card strong,
-.elite-dock-services-meta strong {
-  display: block;
-  margin-top: 0.4rem;
-  color: var(--elite-text);
-  font-size: 0.92rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
 }
 
 .elite-docking-primary,
@@ -1077,15 +1076,10 @@ input[type="range"] {
   border: 1px solid var(--elite-cyan);
   background: rgba(38, 217, 255, 0.1);
   color: var(--elite-cyan);
-  padding: 0.8rem 1rem;
+  padding: 0.65rem 0.85rem;
   font-weight: 800;
   text-transform: uppercase;
-}
-
-.elite-docking-gate-view,
-.elite-docking-pad-view {
-  display: grid;
-  gap: 1rem;
+  cursor: pointer;
 }
 
 .elite-docking-gate-frame,
@@ -1093,7 +1087,7 @@ input[type="range"] {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 20rem;
+  min-height: 12.5rem;
   border: 1px solid var(--elite-line);
   background:
     linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
@@ -1104,36 +1098,76 @@ input[type="range"] {
 }
 
 .elite-docking-gate-target {
-  width: min(23rem, 70%);
-  height: 10rem;
+  width: min(11rem, 74%);
+  height: 6rem;
   border: 2px solid var(--elite-cyan);
   box-shadow: inset 0 0 0 1px rgba(38, 217, 255, 0.25);
 }
 
-.elite-docking-gate-ship {
+.elite-docking-ship-sprite {
   position: absolute;
-  width: 4rem;
-  height: 6rem;
-  border: 1px solid var(--elite-accent);
-  background:
-    linear-gradient(180deg, rgba(255, 140, 26, 0.2), rgba(255, 140, 26, 0.06));
-  clip-path: polygon(50% 0%, 82% 24%, 100% 100%, 0% 100%, 18% 24%);
+  height: auto;
+  transform-origin: center;
+  filter: drop-shadow(0 0 7px rgba(38, 217, 255, 0.72));
+  will-change: transform;
+}
+
+.elite-docking-ship-rear {
+  position: absolute;
+  height: auto;
+  overflow: visible;
+  transform-origin: center;
+  filter: drop-shadow(0 0 7px rgba(38, 217, 255, 0.62));
+  will-change: transform;
+}
+
+.elite-docking-ship-rear .rear-hull {
+  fill: rgba(2, 19, 36, 0.9);
+  stroke: #00f3ff;
+  stroke-width: 1.6;
+}
+
+.elite-docking-ship-rear .rear-canopy {
+  fill: rgba(255, 123, 0, 0.14);
+  stroke: #ff7b00;
+  stroke-width: 1.2;
+}
+
+.elite-docking-ship-rear .rear-wing,
+.elite-docking-ship-rear .rear-spine,
+.elite-docking-ship-rear .rear-ridge,
+.elite-docking-ship-rear .rear-base,
+.elite-docking-ship-rear .rear-frame {
+  fill: none;
+  stroke: #00b0ff;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.elite-docking-ship-rear .rear-base {
+  stroke: #00f3ff;
+  stroke-width: 1.4;
+}
+
+.elite-docking-ship-rear .rear-ridge {
+  stroke: #00f3ff;
+  stroke-width: 1.3;
+}
+
+.elite-docking-ship-rear .rear-frame.subtle {
+  stroke-opacity: 0.62;
 }
 
 .elite-docking-pad-target {
-  width: min(24rem, 72%);
-  height: 14rem;
+  width: min(10.5rem, 70%);
+  height: 7.5rem;
   border: 2px solid var(--elite-green);
   box-shadow: inset 0 0 0 1px rgba(22, 242, 139, 0.28);
 }
 
-.elite-docking-pad-ship {
-  position: absolute;
-  border: 1px solid var(--elite-cyan);
-  background:
-    linear-gradient(180deg, rgba(38, 217, 255, 0.18), rgba(38, 217, 255, 0.06));
-  clip-path: polygon(50% 0%, 88% 18%, 100% 100%, 0% 100%, 12% 18%);
-  transform-origin: center;
+.elite-docking-pad-sprite {
+  filter: drop-shadow(0 0 7px rgba(22, 242, 139, 0.58));
 }
 
 .elite-docking-progress {
@@ -1146,7 +1180,7 @@ input[type="range"] {
 
 .elite-docking-progress span,
 .elite-docking-progress strong {
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -1163,13 +1197,13 @@ input[type="range"] {
   background: var(--elite-cyan);
 }
 
-.elite-docking-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
+.elite-docking-keypad {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
 }
 
-.elite-docking-controls button,
+.elite-docking-keypad button,
 .elite-dock-service-card,
 .elite-dock-undock {
   border: 1px solid var(--elite-line);
@@ -1180,10 +1214,13 @@ input[type="range"] {
   font-weight: 800;
 }
 
-.elite-docking-controls button {
+.elite-docking-keypad button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.45rem;
+  min-height: 2.35rem;
+  cursor: pointer;
 }
 
 .elite-dock-services {
@@ -1317,200 +1354,335 @@ input[type="range"] {
   font-size: 0.78rem;
 }
 
-.elite-station-panel-shell,
-.elite-station-section {
+.elite-terminal-screen {
+  display: grid;
+  gap: 1rem;
   border: 1px solid var(--elite-line);
-  background: rgba(255, 255, 255, 0.03);
-  padding: 1rem;
+  background: rgba(6, 10, 14, 0.76);
+  padding: 0.9rem;
+  font-family: "Courier New", "Monaco", "Menlo", monospace;
 }
 
-.elite-station-panel-header {
+.elite-terminal-header,
+.elite-terminal-section-bar,
+.elite-terminal-action-row,
+.elite-terminal-actions,
+.elite-contract-title-cell {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+}
+
+.elite-terminal-header,
+.elite-terminal-section-bar {
   justify-content: space-between;
   gap: 1rem;
 }
 
-.elite-station-panel-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0;
-  color: var(--elite-text);
-  font-size: 0.92rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.elite-terminal-header {
+  border-bottom: 1px solid rgba(245, 158, 11, 0.35);
+  padding-bottom: 0.85rem;
 }
 
-.elite-station-panel-subtitle {
+.elite-terminal-kicker,
+.elite-terminal-stat span,
+.elite-terminal-credit-box span,
+.elite-terminal-section-bar span,
+.elite-terminal-table th,
+.elite-terminal-tag {
+  color: var(--elite-muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.elite-terminal-title {
+  margin: 0.2rem 0 0;
+  color: var(--elite-text);
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.elite-terminal-copy {
   margin: 0.35rem 0 0;
   color: var(--elite-muted);
-  font-size: 0.76rem;
-}
-
-.elite-station-panel-credit {
-  border: 1px solid var(--elite-line);
-  padding: 0.75rem 0.9rem;
-  min-width: 12rem;
-}
-
-.elite-station-panel-credit span,
-.elite-shipyard-overview span,
-.elite-station-section-heading span,
-.elite-shipyard-card small,
-.elite-upgrade-card span {
-  color: var(--elite-muted);
-  font-size: 0.68rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.elite-station-panel-credit strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-top: 0.45rem;
-  color: var(--elite-cyan);
-  font-size: 0.94rem;
-}
-
-.elite-shipyard-overview {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.9rem;
-  margin-top: 1rem;
-}
-
-.elite-shipyard-overview > div {
-  border: 1px solid var(--elite-line);
-  background: rgba(0, 0, 0, 0.22);
-  padding: 0.85rem 0.95rem;
-}
-
-.elite-shipyard-overview strong {
-  display: block;
-  margin-top: 0.45rem;
-  color: var(--elite-text);
-  font-size: 0.94rem;
-}
-
-.elite-shipyard-overview small,
-.elite-shipyard-card p,
-.elite-upgrade-card p {
-  display: block;
-  margin-top: 0.35rem;
-  color: var(--elite-muted);
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   line-height: 1.45;
 }
 
-.elite-station-section-heading {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.9rem;
-  color: var(--elite-cyan);
+.elite-terminal-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.55rem;
 }
 
-.elite-shipyard-grid,
-.elite-upgrade-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.85rem;
-}
-
-.elite-shipyard-card,
-.elite-upgrade-card {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
+.elite-terminal-credit-box,
+.elite-terminal-stat,
+.elite-terminal-note,
+.elite-terminal-table-wrap,
+.elite-terminal-tabs {
   border: 1px solid var(--elite-line);
   background: rgba(0, 0, 0, 0.22);
-  padding: 0.9rem;
 }
 
-.elite-shipyard-card strong,
-.elite-upgrade-card strong {
-  display: block;
-  color: var(--elite-text);
+.elite-terminal-credit-box {
+  min-width: 13rem;
+  padding: 0.7rem 0.85rem;
+}
+
+.elite-terminal-credit-box strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  color: var(--elite-accent);
   font-size: 0.9rem;
 }
 
-.elite-shipyard-actions {
+.elite-terminal-grid {
   display: grid;
-  justify-items: end;
-  gap: 0.5rem;
-  min-width: 8rem;
+  gap: 0.75rem;
 }
 
-.elite-shipyard-actions span {
-  color: var(--elite-cyan);
-  font-size: 0.78rem;
-  font-weight: 800;
-  text-transform: uppercase;
+.elite-terminal-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.elite-shipyard-card button,
-.elite-upgrade-card button {
+.elite-terminal-grid-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.elite-terminal-stat {
+  padding: 0.75rem 0.85rem;
+}
+
+.elite-terminal-stat strong {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--elite-text);
+  font-size: 0.88rem;
+}
+
+.elite-terminal-section {
+  display: grid;
+  gap: 0;
   border: 1px solid var(--elite-line);
-  background: rgba(38, 217, 255, 0.1);
-  color: var(--elite-cyan);
-  padding: 0.55rem 0.8rem;
+}
+
+.elite-terminal-section-bar {
+  min-height: 2.5rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--elite-line);
+  background: var(--elite-accent-dim);
+  color: var(--elite-accent);
+}
+
+.elite-terminal-section-bar strong {
+  color: var(--elite-text);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.elite-terminal-note {
+  padding: 0.85rem;
+  color: var(--elite-muted);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.elite-terminal-note-inline {
+  color: var(--elite-muted);
   font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.elite-terminal-table-wrap {
+  overflow-x: auto;
+}
+
+.elite-terminal-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--elite-text);
+  font-size: 0.76rem;
+}
+
+.elite-terminal-table th,
+.elite-terminal-table td {
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  vertical-align: top;
+}
+
+.elite-terminal-table thead th {
+  background: rgba(255, 255, 255, 0.03);
+  text-align: left;
+}
+
+.elite-terminal-table td {
+  color: rgba(226, 232, 240, 0.84);
+}
+
+.elite-terminal-table td.is-strong,
+.elite-terminal-table .is-strong {
+  color: var(--elite-text);
+  font-weight: 700;
+}
+
+.elite-terminal-table .is-number {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.elite-terminal-table .is-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.elite-terminal-action-row {
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.elite-terminal-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2rem;
+  border: 1px solid var(--elite-line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--elite-text);
+  padding: 0.45rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.68rem;
   font-weight: 800;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.elite-shipyard-card button.is-disabled,
-.elite-upgrade-card button.is-disabled,
-.elite-shipyard-card button:disabled,
-.elite-upgrade-card button:disabled {
-  background: rgba(255, 255, 255, 0.03);
+.elite-terminal-button.is-primary,
+.elite-terminal-button.is-active {
+  border-color: color-mix(in srgb, var(--elite-accent) 50%, transparent);
+  background: var(--elite-accent-dim);
+  color: var(--elite-accent);
+}
+
+.elite-terminal-button.is-danger {
+  border-color: rgba(239, 68, 68, 0.34);
+  background: rgba(127, 29, 29, 0.18);
+  color: #fca5a5;
+}
+
+.elite-terminal-button:disabled {
   color: var(--elite-muted);
+  background: rgba(255, 255, 255, 0.025);
 }
 
-.elite-upgrade-card.is-installed {
-  border-color: rgba(22, 242, 139, 0.35);
+.elite-terminal-tabs {
+  display: flex;
+  flex-wrap: wrap;
 }
 
-.elite-upgrade-card.is-installed .elite-shipyard-actions span {
+.elite-terminal-tab {
+  border: 0;
+  border-right: 1px solid var(--elite-line);
+  background: transparent;
+  color: var(--elite-muted);
+  padding: 0.65rem 0.85rem;
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.elite-terminal-tab.is-active {
+  background: var(--elite-accent-dim);
+  color: var(--elite-accent);
+}
+
+.elite-terminal-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--elite-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.elite-terminal-state.is-ok {
   color: var(--elite-green);
 }
 
-.elite-shipyard-empty {
-  border: 1px solid var(--elite-line);
-  padding: 1rem;
-  color: var(--elite-muted);
-  font-size: 0.78rem;
+.elite-terminal-state.is-warn {
+  color: #fca5a5;
+}
+
+.elite-terminal-state.is-active {
+  color: var(--elite-accent);
+}
+
+.elite-terminal-tag {
+  border: 1px solid color-mix(in srgb, var(--elite-accent) 35%, transparent);
+  background: var(--elite-accent-dim);
+  color: var(--elite-accent);
+  padding: 0.12rem 0.35rem;
+}
+
+.elite-contract-title-cell {
+  gap: 0.45rem;
+}
+
+.elite-terminal-training {
+  border-color: rgba(245, 158, 11, 0.26);
+}
+
+.elite-value-cyan {
+  color: var(--elite-accent);
+}
+
+.elite-value-amber {
+  color: var(--elite-accent);
+}
+
+.elite-value-green {
+  color: var(--elite-green);
+}
+
+.elite-value-red {
+  color: #fca5a5;
 }
 
 @media (max-width: 900px) {
-  .elite-docking-layout,
   .elite-dock-services-hero,
   .elite-dock-status-grid,
-  .elite-shipyard-overview,
   .elite-dock-services-grid,
-  .elite-docking-arrival-card,
-  .elite-shipyard-grid,
-  .elite-upgrade-grid {
+  .elite-terminal-grid-4,
+  .elite-terminal-grid-5 {
     grid-template-columns: 1fr;
   }
 
-  .elite-station-panel-header,
-  .elite-docking-sidebar {
-    display: block;
+  .elite-docking-modal {
+    top: 0.75rem;
+    right: 0.75rem;
+    width: calc(100vw - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
   }
 
-  .elite-station-panel-credit {
-    margin-top: 1rem;
+  .elite-docking-title-row,
+  .elite-docking-ship-card {
+    grid-template-columns: 1fr;
   }
 
-  .elite-docking-sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--elite-line);
+  .elite-docking-title-row strong {
+    justify-self: start;
   }
 
   .elite-dock-services-footer {
@@ -1518,8 +1690,19 @@ input[type="range"] {
     align-items: stretch;
   }
 
+  .elite-terminal-header,
+  .elite-terminal-section-bar {
+    display: block;
+  }
+
+  .elite-terminal-actions {
+    justify-content: flex-start;
+    margin-top: 0.85rem;
+  }
+
   .elite-dock-undock,
-  .elite-docking-primary {
+  .elite-docking-primary,
+  .elite-terminal-button {
     justify-self: stretch;
     justify-content: center;
   }

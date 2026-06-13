@@ -72,12 +72,17 @@ export const TutorialHud: React.FC<TutorialHudProps> = ({
     () => (objective?.targetBodyId ? bodies.find((body) => body.id === objective.targetBodyId) || null : null),
     [bodies, objective?.targetBodyId],
   );
+  const tutorialDeliveryReady = !!tutorialContract
+    && tutorialContract.accepted
+    && gameState.isDocked
+    && gameState.dockedBodyId === tutorialContract.destinationId
+    && (!tutorialContract.destinationPortId || gameState.dockedPortId === tutorialContract.destinationPortId);
 
   if (!objective) return null;
 
   const stepNumber = TUTORIAL_STEP_ORDER.indexOf(objective.id) + 1;
   const isContractStage = objective.id === "first-paid-run";
-  const primaryAction = isContractStage && !tutorialContract?.accepted
+  const primaryAction = isContractStage && (!tutorialContract?.accepted || tutorialDeliveryReady)
     ? { label: "Open Contract Board", onClick: onOpenContracts }
     : objective.targetBodyId
       ? { label: objective.actionLabel, onClick: () => onSelectBody(objective.targetBodyId as string) }

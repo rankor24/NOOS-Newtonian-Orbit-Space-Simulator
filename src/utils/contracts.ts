@@ -1,4 +1,5 @@
-import { SpaceContract } from "../types";
+import { CelestialBody, GameState, SpaceContract } from "../types";
+import { getAbsoluteBodyPosition, getBodyVelocity } from "./physics";
 import { PortRecord, getPortContractTemplates, makePortContract } from "./worldText";
 
 const DAY_SECONDS = 86400;
@@ -104,4 +105,53 @@ export function expireAcceptedContracts(contracts: SpaceContract[], gameTime: nu
     return failedContract;
   });
   return { contracts: nextContracts, failed };
+}
+
+export function getContractCompletionStatus(contract: SpaceContract, gameState: GameState, bodies: CelestialBody[]) {
+  const { ship, isDocked, dockedBodyId, dockedPortId, gameTime } = gameState;
+  if (!contract.accepted || contract.completed || contract.failed) return { ok: false, reason: "Contract not active." };
+  if (contract.deadline && contract.deadline <= gameTime) return { ok: false, reason: "Contract expired." };
+
+  if (contract.type === "delivery") {
+    const cargoAmount = ship.cargo[contract.cargoType || ""] || 0;
+    const atDestination = isDocked
+      && dockedBodyId === contract.destinationId
+      && (!contract.destinationPortId || dockedPortId === contract.destinationPortId);
+    if (!atDestination) return { ok: false, reason: "Dock at the destination port to deliver." };
+    if (cargoAmount < (contract.amount || 0)) return { ok: false, reason: `Need ${(contract.amount || 0)}t ${contract.cargoType}.` };
+    return { ok: true, reason: "Ready to deliver." };
+  }
+
+  if (contract.type === "passenger") {
+    const atDestination = isDocked
+      && dockedBodyId === contract.destinationId
+      && (!contract.destinationPortId || dockedPortId === contract.destinationPortId);
+    return atDestination
+      ? { ok: true, reason: "Passengers ready to disembark." }
+      : { ok: false, reason: "Dock at the destination port to disembark passengers." };
+  }
+
+  if (contract.type === "orbit") {
+    const targetBody = bodies.find((body) => body.id === contract.destinationId);
+    if (!targetBody) return { ok: false, reason: "Target body unavailable." };
+    const targetPos = getAbsoluteBodyPosition(targetBody.id, bodies, gameState.gameTime);
+    const targetVel = getBodyVelocity(targetBody.id, bodies, gameState.gameTime);
+    const dist = Math.hypot(ship.x - targetPos.x, ship.y - targetPos.y);
+    const relSpeed = Math.hypot(ship.vx - targetVel.vx, ship.vy - targetVel.vy);
+    if (dist > (targetBody.radius || 0) + 1_200_000) return { ok: false, reason: "Move into the target orbital envelope." };
+    if (relSpeed > 2_000) return { ok: false, reason: "Relative speed too high for orbital match." };
+    return { ok: true, reason: "Telemetry match achieved." };
+  }
+
+  if (contract.type === "mining") {
+    const minedAmount = ship.cargo[contract.cargoType || "ore"] || 0;
+    const atOrigin = isDocked
+      && dockedBodyId === contract.originId
+      && (!contract.issuerPortId || dockedPortId === contract.issuerPortId);
+    if (!atOrigin) return { ok: false, reason: "Return to the issuing port with the payload." };
+    if (minedAmount < (contract.amount || 0)) return { ok: false, reason: `Need ${(contract.amount || 0)}t ${contract.cargoType || "ore"}.` };
+    return { ok: true, reason: "Payload ready for handover." };
+  }
+
+  return { ok: false, reason: "Unknown contract type." };
 }

@@ -151,6 +151,10 @@ const PRIORITY_SMALL_BODIES = new Set([
   "Arrokoth",
 ]);
 
+const TERMINAL_APPROACH_MODES = new Set<AutopilotMode>(["goto-target", "approach-target", "match-speed"]);
+const isTerminalApproachMode = (mode: string): mode is AutopilotMode =>
+  TERMINAL_APPROACH_MODES.has(mode as AutopilotMode);
+
 /** Matches IAU provisional moon designations: S2001_J_3, S2023_S_15, S2025_U_1, etc. */
 function isDesignationMoonName(name: string): boolean {
   return /^S\d{4}_[JSUN]_\d+$/.test(name);
@@ -512,6 +516,8 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
 
   const scale = resolved.scale;
   const zoomExponent = resolved.exponent;
+  const resolvedCenterRef = useRef<Point>(resolved.center);
+  resolvedCenterRef.current = resolved.center;
 
   const getFocusCenter = (mode: CameraMode): Point => {
     if (mode === "ship") return { x: ship.x, y: ship.y };
@@ -1065,16 +1071,69 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
       return;
     }
 
+    const selectedTarget = selectedBodyId ? bodies.find((body) => body.id === selectedBodyId) : null;
+    const selectedTargetPos = selectedTarget ? getBodyPos(selectedTarget.id) : null;
+    const targetDistance = selectedTargetPos
+      ? Math.hypot(ship.x - selectedTargetPos.x, ship.y - selectedTargetPos.y)
+      : null;
+    const shipSpeed = Math.max(1, Math.hypot(ship.vx, ship.vy));
+    const isTerminalStationApproach = Boolean(
+      selectedTarget?.type === "station"
+      && selectedTargetPos
+      && targetDistance !== null
+      && targetDistance < 80_000_000
+      && isTerminalApproachMode(autopilotMode)
+    );
+
+    if (isTerminalStationApproach && selectedTargetPos && targetDistance !== null) {
+      if (lastRouteRef.current.points.length > 0) {
+        lastRouteRef.current = createEmptyRoutePrognosis();
+      }
+
+      const shipPt = toScreen(ship, center, width, height);
+      const targetPt = toScreen(selectedTargetPos, center, width, height);
+      ctx.save();
+      ctx.strokeStyle = colorWithAlpha(palette.accent, 0.86);
+      ctx.fillStyle = colorWithAlpha(palette.accent, 0.95);
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.moveTo(shipPt.x, shipPt.y);
+      ctx.lineTo(targetPt.x, targetPt.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(targetPt.x, targetPt.y, 7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.font = "bold 10px ui-monospace, SFMono-Regular, Consolas, monospace";
+      ctx.fillText("APPROACH", targetPt.x + 10, targetPt.y - 10);
+
+      const readoutX = 14;
+      const readoutY = Math.round(height * 0.42) + 60;
+      ctx.fillStyle = "rgba(2,6,23,0.74)";
+      ctx.strokeStyle = "rgba(148,163,184,0.28)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(readoutX - 6, readoutY - 13, 318, 56);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(226,232,240,0.78)";
+      ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
+      ctx.fillText("APPROACH CORRIDOR", readoutX, readoutY);
+      ctx.fillText(`TARGET ${selectedTarget?.name ?? "STATION"}`, readoutX, readoutY + 14);
+      ctx.fillStyle = "rgba(250,204,21,0.9)";
+      ctx.fillText(`RANGE ${formatDistanceMeters(targetDistance)}`, readoutX, readoutY + 28);
+      ctx.fillStyle = "rgba(226,232,240,0.68)";
+      ctx.fillText(`SPEED ${Math.round(shipSpeed).toLocaleString()} m/s`, readoutX, readoutY + 42);
+      ctx.restore();
+      return;
+    }
+
     // Route prediction is the most expensive draw step; refresh on a wall-clock
     // budget so high frame rates and high warp don't multiply the cost.
     const nowMs = performance.now();
     if (nowMs - lastRouteComputeAtRef.current >= 600 || lastRouteRef.current.points.length === 0) {
       lastRouteComputeAtRef.current = nowMs;
-      const selectedTarget = selectedBodyId ? bodies.find((body) => body.id === selectedBodyId) : null;
-      const targetDistance = selectedTarget
-        ? Math.hypot(ship.x - getBodyPos(selectedTarget.id).x, ship.y - getBodyPos(selectedTarget.id).y)
-        : null;
-      const shipSpeed = Math.max(1, Math.hypot(ship.vx, ship.vy));
       const routeDuration = targetDistance
         ? Math.max(7200, Math.min(86400 * 5, (targetDistance / shipSpeed) * 2.2))
         : 86400 * 3;
@@ -1183,7 +1242,13 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     ctx.stroke();
     ctx.fillStyle = "rgba(226,232,240,0.78)";
     ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
-    ctx.fillText(`PROGNOSIS ${formatDuration(prognosis.duration)} COAST`, readoutX, readoutY);
+    let prognosisMode = "COAST";
+    if (autopilotMode === "goto-target") {
+      prognosisMode = "GO TO";
+    } else if (isTerminalApproachMode(autopilotMode)) {
+      prognosisMode = "APPR";
+    }
+    ctx.fillText(`PROGNOSIS ${formatDuration(prognosis.duration)} ${prognosisMode}`, readoutX, readoutY);
     ctx.fillText(`REF ${refName}`, readoutX, readoutY + 14);
     ctx.fillStyle = prognosis.referenceClosestAltitude <= 0 ? "#f87171" : "rgba(250,204,21,0.9)";
     ctx.fillText(referenceBody ? `Pe ${formatDistanceMeters(prognosis.referenceClosestAltitude)}` : "Pe --", readoutX, readoutY + 28);
@@ -1238,7 +1303,39 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
 
       drawCacheRef.current = buildBodyPositionCache(bodies, gameTime);
 
-      const center = resolved.center;
+      let center = resolvedCenterRef.current;
+      if (cameraMode === "ship") {
+        center = { x: ship.x, y: ship.y };
+      } else if (cameraMode === "target" && selectedBodyId) {
+        center = getBodyPos(selectedBodyId);
+      } else if (cameraMode === "fit") {
+        let fitTarget = selectedBody;
+        if (!fitTarget && bodies.length > 0) {
+          const candidateBodies = bodies.filter((body) => body.type !== "star");
+          const searchList = candidateBodies.length > 0 ? candidateBodies : bodies;
+          fitTarget = searchList.reduce((prev, curr) => {
+            const posP = getBodyPos(prev.id);
+            const posC = getBodyPos(curr.id);
+            const dP = Math.hypot(ship.x - posP.x, ship.y - posP.y);
+            const dC = Math.hypot(ship.x - posC.x, ship.y - posC.y);
+            return dC < dP ? curr : prev;
+          }, searchList[0]);
+        }
+
+        if (fitTarget) {
+          const targetPos = getBodyPos(fitTarget.id);
+          const boundingRadius = fitTarget.radius ?? 1000;
+          const minX = Math.min(ship.x, targetPos.x - boundingRadius);
+          const maxX = Math.max(ship.x, targetPos.x + boundingRadius);
+          const minY = Math.min(ship.y, targetPos.y - boundingRadius);
+          const maxY = Math.max(ship.y, targetPos.y + boundingRadius);
+          center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+        } else {
+          center = { x: ship.x, y: ship.y };
+        }
+      }
+      lastRenderedCenterRef.current = center;
+      lastRenderedScaleRef.current = scale;
       drawBackground(ctx, width, height);
       drawGrid(ctx, center, width, height);
 
@@ -1310,7 +1407,6 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     miningActive,
     miningTargetId,
     palette,
-    resolved.center,
     revealedBodies,
     scale,
     selectedBody,

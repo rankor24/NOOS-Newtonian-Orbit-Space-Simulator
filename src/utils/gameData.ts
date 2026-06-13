@@ -465,7 +465,7 @@ export function createInitialState(commanderName = "Commander"): GameState {
     flightMode: "local-system",
     interstellar: null,
     gameTime: 0,
-    timeScale: 60,
+    timeScale: 1,
     playerCredits: 2000,
     playerProfile: createDefaultPlayerProfile(),
     ship: initialShip,

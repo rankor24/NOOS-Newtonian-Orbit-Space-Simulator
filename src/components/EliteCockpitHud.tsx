@@ -382,7 +382,7 @@ function EliteCockpitHudInner({
             </button>
           ))}
         </div>
-        {warpStatus.reason !== null && warpStatus.effective < gameState.timeScale && (
+        {gameState.timeScale > 1 && warpStatus.reason !== null && warpStatus.effective < gameState.timeScale && (
           <DataRow
             label="Warp Limit"
             value={`x${warpStatus.effective.toLocaleString()} — ${

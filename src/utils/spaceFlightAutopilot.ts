@@ -177,7 +177,7 @@ export function computeApproachGuidance(input: ApproachGuidanceInput): ApproachG
     };
   }
 
-  const wantsOrbitCapture = mu > 0 && distance < targetOrbitDistance * 1.35;
+  const wantsOrbitCapture = !input.stationApproach && mu > 0 && distance < targetOrbitDistance * 1.35;
   const desiredTangentialSpeed = circularSpeedAtOrbit * (wantsOrbitCapture ? 0.62 : 0.25) * orbitSign;
   const tangentError = desiredTangentialSpeed - tangentialSpeed;
   const needsTangentialBurn = wantsOrbitCapture && Math.abs(tangentError) > Math.max(120, circularSpeedAtOrbit * 0.12);

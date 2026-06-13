@@ -18,7 +18,7 @@ import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, get
 import { awardCareerXp, addReputation } from "./utils/progression";
 import { refreshMarkets } from "./utils/economy";
 import { canScanBody, getTotalSurveyDataValue, recordStarDiscovery, scanBody } from "./utils/exploration";
-import { expireAcceptedContracts, refreshContractsForPorts } from "./utils/contracts";
+import { expireAcceptedContracts, getContractCompletionStatus, refreshContractsForPorts } from "./utils/contracts";
 import {
   buildUndockState,
   type DockingClearanceState,
@@ -32,6 +32,7 @@ import {
   completeTutorialStep,
   formatTutorialRewardLabel,
   getFirstIncompleteTutorialStep,
+  reconcileFirstPaidRunTutorialContract,
   TUTORIAL_CONTRACT_ID,
   TUTORIAL_STEP_TITLES,
 } from "./utils/tutorial";
@@ -190,6 +191,11 @@ const [requestedManagementTab, setRequestedManagementTab] = useState<"dock-main"
 const [mapMode, setMapMode] = useState<"star" | "ship" | "target" | "galaxy">("star");
 const [isThrusting, setIsThrusting] = useState<boolean>(false);
 const [showDockingSequence, setShowDockingSequence] = useState(false);
+const [pendingDockingCompletion, setPendingDockingCompletion] = useState<{
+  bodyId: string;
+  portId: string;
+  ship: GameState["ship"];
+} | null>(null);
 // Written every tick by the autopilot; the HUD reads it via the 10 Hz snapshot below.
 const approachGuidanceRef = useRef<ApproachGuidance | null>(null);
 // Effective warp actually applied this tick and why it was limited, for the HUD readout.
@@ -242,6 +248,9 @@ const applyDockingClearance = useCallback((next: DockingClearanceState | null) =
   dockingClearanceRef.current = next;
   setDockingClearance(next);
 }, []);
+const showDockingSequenceRef = useRef(showDockingSequence);
+showDockingSequenceRef.current = showDockingSequence;
+const tutorialManifestBlockedRef = useRef(false);
 useEffect(() => {
 if (!gameState.isDocked || dockingClearance === null) return;
 applyDockingClearance(null);
@@ -251,9 +260,36 @@ if (!gameState.isDocked) return;
 departureLockRef.current = null;
 }, [gameState.isDocked]);
 useEffect(() => {
-if (gameState.isDocked) return;
-setShowDockingSequence(false);
-}, [gameState.isDocked]);
+  const result = reconcileFirstPaidRunTutorialContract(stateRef.current);
+  if (result.changed) {
+    tutorialManifestBlockedRef.current = false;
+    commitGameState(result.state);
+    const loadedText = result.loadedCargoTons > 0 ? ` Loaded ${result.loadedCargoTons}t manifest cargo.` : "";
+    addConsoleLog(`Training Desk: First Paid Run manifest active.${loadedText} Deliver it and submit from the contract board.`, "info");
+    return;
+  }
+  if (result.blocked && !tutorialManifestBlockedRef.current) {
+    tutorialManifestBlockedRef.current = true;
+    addConsoleLog("Training Desk: clear 1t cargo space so the First Paid Run manifest can be loaded.", "warning");
+    return;
+  }
+  if (!result.blocked) {
+    tutorialManifestBlockedRef.current = false;
+  }
+}, [
+  commitGameState,
+  gameState.activeTutorialStep,
+  gameState.contracts,
+  gameState.ship.cargo,
+  gameState.ship.cargoCapacity,
+  gameState.ship.cargoCapacityTons,
+  gameState.tutorialCompleted,
+  gameState.tutorialSkipped,
+]);
+useEffect(() => {
+if (!gameState.isDocked || gameState.timeScale === 1) return;
+commitGameState((prev) => (prev.isDocked && prev.timeScale !== 1 ? { ...prev, timeScale: 1 } : prev));
+}, [commitGameState, gameState.isDocked, gameState.timeScale]);
 const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: false, circMode: false, matchMode: false });
 
 // The DOM cockpit re-renders from this 10 Hz snapshot instead of every animation frame;
@@ -322,6 +358,14 @@ const dockedPortRecord = useMemo(() => {
   if (!gameState.dockedBodyId || !gameState.dockedPortId) return null;
   return dockedBody ? getPortsForBody(dockedBody).find((port) => port.id === gameState.dockedPortId) || null : null;
 }, [dockedBody, gameState.dockedBodyId, gameState.dockedPortId]);
+const pendingDockingBody = useMemo(
+  () => (pendingDockingCompletion ? systemBodies.find((body) => body.id === pendingDockingCompletion.bodyId) || null : null),
+  [pendingDockingCompletion, systemBodies],
+);
+const pendingDockingPort = useMemo(() => {
+  if (!pendingDockingCompletion || !pendingDockingBody) return null;
+  return getPortsForBody(pendingDockingBody).find((port) => port.id === pendingDockingCompletion.portId) || null;
+}, [pendingDockingBody, pendingDockingCompletion]);
 const dockedFactionReputation = dockedPortRecord ? gameState.playerProfile.reputation[dockedPortRecord.faction] || 0 : 0;
 const galacticMapUnlocked = gameState.ship.warpCapacity && gameState.ship.installedUpgradeIds.includes("galactic_chart");
 const shipyardCatalog = getShipyardCatalog().filter((entry) => (
@@ -430,6 +474,10 @@ return;
 }
 
 const current = stateRef.current;
+if (showDockingSequenceRef.current) {
+frameId = requestAnimationFrame(tick);
+return;
+}
 let gameDt = realDt * current.timeScale; // Game seconds elapsed; safety guards may clamp this below.
 
     // Build position cache once per tick â€” all physics calls reuse this
@@ -706,16 +754,41 @@ terminalDistance,
 terminalSpeed: Math.max(25, activeSpecs.maxSpeed * 0.5),
 deltaVBudget: current.ship.engineIsp * 9.80665 * Math.log(shipMass / Math.max(1, current.ship.dryMass)),
 });
+if (guidance.phase === "arrived") {
+const terminalGuidance = computeApproachGuidance({
+dx,
+dy,
+relVx,
+relVy,
+maxAcceleration: maxAccel,
+arrivalDistance: activeSpecs.maxDistance * 0.9,
+arrivalSpeed: Math.max(50, activeSpecs.maxSpeed * 0.35),
+safetyDistance: 400000,
+maxCruiseClosingSpeed: 4500,
+stationApproach: activeTargetBody.type === "station",
+currentHeading: current.ship.heading,
+targetMass,
+bodyRadius,
+});
+approachGuidanceRef.current = terminalGuidance;
+if (terminalGuidance.etaSeconds !== null && Number.isFinite(terminalGuidance.etaSeconds)) {
+autopilotTimeGuardSeconds = Math.max(realDt, terminalGuidance.etaSeconds * 0.05);
+}
+
+if (terminalGuidance.phase === "arrived") {
+throttleCommand = 0;
+setAutopilotMode("none");
+addConsoleLog(`Autopilot: GO TO complete around ${activeTargetBody.name || "target"}. Velocity matched within docking envelope.`, "success");
+} else {
+targetHeading = terminalGuidance.targetHeading;
+const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
+throttleCommand = angleError < 0.25 ? terminalGuidance.throttlePercent : 0;
+}
+} else {
 approachGuidanceRef.current = guidance;
 if (guidance.etaSeconds !== null && Number.isFinite(guidance.etaSeconds)) {
 autopilotTimeGuardSeconds = Math.max(realDt, guidance.etaSeconds * 0.05);
 }
-
-if (guidance.phase === "arrived") {
-throttleCommand = 0;
-setAutopilotMode("approach-target");
-addConsoleLog(`Autopilot: Transfer leg captured near ${activeTargetBody.name}. Terminal approach engaged.`, "success");
-} else {
 targetHeading = guidance.targetHeading;
 const angleError = Math.abs(angleDelta(targetHeading, current.ship.heading));
 throttleCommand = angleError < 0.25 ? guidance.throttlePercent : 0;
@@ -747,7 +820,7 @@ arrivalDistance: activeSpecs.maxDistance * 0.9,
 arrivalSpeed: Math.max(50, activeSpecs.maxSpeed * 0.35),
 safetyDistance: 400000,
 maxCruiseClosingSpeed: 4500,
-stationApproach: activeTargetBody.hasMarket,
+stationApproach: activeTargetBody.type === "station",
 currentHeading: current.ship.heading,
 targetMass,
 bodyRadius,
@@ -814,7 +887,7 @@ if (dockingClearanceRef.current?.holdStartedAt != null && current.timeScale > 1)
 gameDt = realDt;
 warpLimitReason = "dock-hold";
 }
-if (autopilotTimeGuardSeconds !== null && gameDt > autopilotTimeGuardSeconds) {
+if (autopilotTimeGuardSeconds !== null && current.timeScale > 1 && gameDt > autopilotTimeGuardSeconds) {
 // Auto warp-down near the target: never step past ~5% of time-to-target per frame.
 gameDt = Math.max(realDt, autopilotTimeGuardSeconds);
 warpLimitReason = "ap-guard";
@@ -999,43 +1072,21 @@ ship: { ...updatedShip, throttlePercent: 0 },
           setAutopilotMode("none");
           setIsThrusting(false);
           applyDockingClearance(null);
-          let dockingTutorialCompletion: ReturnType<typeof completeTutorialStep> | null = null;
-          commitGameState((prev) => {
-            const nextState = {
-              ...prev,
-              gameTime: current.gameTime + gameDt,
-              isDocked: true,
-              dockedBodyId: dockBody.id,
-              dockedPortId: dockPort.id,
-              miningTargetId: null,
-              playerProfile: {
-                ...prev.playerProfile,
-                totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt,
-                stats: { ...prev.playerProfile.stats, dockingCount: prev.playerProfile.stats.dockingCount + 1 },
-              },
-              ship: {
-                ...updatedShip,
-                x: parkingX,
-                y: parkingY,
-                vx: dockVelocity.vx,
-                vy: dockVelocity.vy,
-                throttlePercent: 0,
-              },
-            };
-
-            if (dockBody.id === prev.tutorialTargetBodyId) {
-              dockingTutorialCompletion = completeTutorialStep(nextState, "docking-practice");
-              return dockingTutorialCompletion.state;
-            }
-
-            return nextState;
+          commitGameState((prev) => ({ ...prev, timeScale: 1 }));
+          setPendingDockingCompletion({
+            bodyId: dockBody.id,
+            portId: dockPort.id,
+            ship: {
+              ...updatedShip,
+              x: parkingX,
+              y: parkingY,
+              vx: dockVelocity.vx,
+              vy: dockVelocity.vy,
+              throttlePercent: 0,
+            },
           });
-          addConsoleLog(`âœ“ Docking clamps engaged at ${dockBody.stationName || dockBody.name}. Trade networks unlocked.`, "success");
+          showDockingSequenceRef.current = true;
           setShowDockingSequence(true);
-          setRequestedManagementTab("dock-main");
-          if (dockingTutorialCompletion?.completed) {
-            addConsoleLog(formatTutorialProgressLog("docking-practice", dockingTutorialCompletion.nextStep, dockingTutorialCompletion.reward), "success");
-          }
           frameId = requestAnimationFrame(tick);
           return;
           }
@@ -1404,13 +1455,16 @@ return;
 }
 
 applyDockingClearance({ bodyId: selectedBody.id, portId: dockingPort.id, holdStartedAt: null });
-addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName || selectedBody.name}. Station capture will match local frame in ${DOCKING_HOLD_SECONDS}s.`, "info");
+addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName || selectedBody.name}. Hold approach corridor for ${DOCKING_HOLD_SECONDS}s to begin manual docking sequence.`, "info");
 };
 
 const handleUndockActivate = () => {
 setAutopilotMode("none");
 setIsThrusting(false);
 applyDockingClearance(null);
+showDockingSequenceRef.current = false;
+setShowDockingSequence(false);
+setPendingDockingCompletion(null);
 commitGameState((prev) => {
 const dockBody = systemBodiesRef.current.find((body) => body.id === prev.dockedBodyId);
 if (!dockBody) {
@@ -1432,6 +1486,7 @@ return {
 isDocked: false,
 dockedBodyId: null,
 dockedPortId: null,
+selectedBodyId: dockBody.id,
 ship: undocked.ship,
 };
 });
@@ -1508,11 +1563,11 @@ if (target.type === "passenger") {
     return;
   }
 }
-const tutorialDeliveryAmount = target.id === TUTORIAL_CONTRACT_ID && target.type === "delivery" ? target.amount || 0 : 0;
-if (tutorialDeliveryAmount > 0) {
+const deliveryAmount = target.type === "delivery" ? target.amount || 0 : 0;
+if (deliveryAmount > 0) {
   const cargoLimit = gameState.ship.cargoCapacityTons ?? gameState.ship.cargoCapacity;
-  if (getCargoUsedTons(gameState.ship) + tutorialDeliveryAmount > cargoLimit) {
-    addConsoleLog("Training Desk: clear cargo space before loading the sealed training packet.", "warning");
+  if (getCargoUsedTons(gameState.ship) + deliveryAmount > cargoLimit) {
+    addConsoleLog("Operations: clear cargo space before loading this mission manifest.", "warning");
     return;
   }
 }
@@ -1521,12 +1576,12 @@ let nextShip = prev.ship;
 if (target.type === "passenger") {
   nextShip = { ...nextShip, passengerCount: nextShip.passengerCount + (target.passengerCount || 0) };
 }
-if (tutorialDeliveryAmount > 0 && target.cargoType) {
+if (deliveryAmount > 0 && target.cargoType) {
   nextShip = {
     ...nextShip,
     cargo: {
       ...nextShip.cargo,
-      [target.cargoType]: (nextShip.cargo[target.cargoType] || 0) + tutorialDeliveryAmount,
+      [target.cargoType]: (nextShip.cargo[target.cargoType] || 0) + deliveryAmount,
     },
   };
 }
@@ -1536,7 +1591,7 @@ ship: nextShip,
 contracts: prev.contracts.map((c) => (c.id === id ? { ...c, accepted: true, failed: false } : c)),
 };
 });
-addConsoleLog(`Operations: Commission underwritten: "${target.title}". Check inventory grids or orbit points to satisfy objective criteria.`, "info");
+addConsoleLog(`Operations: Commission underwritten: "${target.title}".${deliveryAmount > 0 ? ` Loaded ${deliveryAmount}t ${target.cargoType || "cargo"}.` : ""} Check destination criteria to complete.`, "info");
 };
 
 // Delivering and claiming mission bounties
@@ -1545,6 +1600,11 @@ const contract = gameState.contracts.find((c) => c.id === id);
 if (!contract || !contract.accepted || contract.completed || contract.failed) return;
 if (contract.deadline && contract.deadline <= gameState.gameTime) {
 addConsoleLog(`Operations: ${contract.title} has already expired.`, "warning");
+return;
+}
+const completionStatus = getContractCompletionStatus(contract, gameState, systemBodiesRef.current);
+if (!completionStatus.ok) {
+addConsoleLog(`Operations: ${contract.title} cannot be completed: ${completionStatus.reason}`, "warning");
 return;
 }
 
@@ -1922,14 +1982,52 @@ onSelectBody={handleSelectTutorialBody}
 onOpenContracts={handleOpenContracts}
 onSkipTutorial={handleSkipTutorial}
 />
-{showDockingSequence && dockedPortRecord && dockedBody ? (
+{showDockingSequence && pendingDockingCompletion && pendingDockingBody && pendingDockingPort ? (
   <DockingSequenceModal
-    ship={hudState.ship}
-    body={dockedBody}
-    port={dockedPortRecord}
-    onComplete={() => {
+    ship={pendingDockingCompletion.ship}
+    body={pendingDockingBody}
+    port={pendingDockingPort}
+    onAbort={() => {
+      showDockingSequenceRef.current = false;
       setShowDockingSequence(false);
+      setPendingDockingCompletion(null);
+      addConsoleLog(`Docking sequence aborted at ${pendingDockingBody.stationName || pendingDockingBody.name}. Return to the approach corridor for a fresh clearance.`, "warning");
+    }}
+    onComplete={() => {
+      const completion = pendingDockingCompletion;
+      if (!completion || !pendingDockingBody) return;
+      let dockingTutorialCompletion: ReturnType<typeof completeTutorialStep> | null = null;
+      commitGameState((prev) => {
+        const nextState = {
+          ...prev,
+          isDocked: true,
+          dockedBodyId: completion.bodyId,
+          dockedPortId: completion.portId,
+          timeScale: 1,
+          miningTargetId: null,
+          selectedBodyId: completion.bodyId,
+          playerProfile: {
+            ...prev.playerProfile,
+            stats: { ...prev.playerProfile.stats, dockingCount: prev.playerProfile.stats.dockingCount + 1 },
+          },
+          ship: completion.ship,
+        };
+
+        if (completion.bodyId === prev.tutorialTargetBodyId) {
+          dockingTutorialCompletion = completeTutorialStep(nextState, "docking-practice");
+          return dockingTutorialCompletion.state;
+        }
+
+        return nextState;
+      });
+      showDockingSequenceRef.current = false;
+      setShowDockingSequence(false);
+      setPendingDockingCompletion(null);
       setRequestedManagementTab("dock-main");
+      addConsoleLog(`Docking clamps engaged at ${pendingDockingBody.stationName || pendingDockingBody.name}. Trade networks unlocked.`, "success");
+      if (dockingTutorialCompletion?.completed) {
+        addConsoleLog(formatTutorialProgressLog("docking-practice", dockingTutorialCompletion.nextStep, dockingTutorialCompletion.reward), "success");
+      }
     }}
   />
 ) : null}
@@ -1964,7 +2062,12 @@ autopilotMode={autopilotMode}
 setAutopilotMode={setAutopilotMode}
 setThrottlePercent={setThrottlePercent}
 setPowerDistribution={setPowerDistribution}
-setTimeScale={(value) => commitGameState((g) => ({ ...g, timeScale: value }))}
+setTimeScale={(value) => {
+  if (value === 1) {
+    warpStatusRef.current = { effective: 1, reason: null };
+  }
+  commitGameState((g) => ({ ...g, timeScale: value }));
+}}
 onSetShipHeading={setShipHeading}
 onClearTarget={() => commitGameState((g) => ({ ...g, selectedBodyId: null }))}
 onDock={handleDockActivate}

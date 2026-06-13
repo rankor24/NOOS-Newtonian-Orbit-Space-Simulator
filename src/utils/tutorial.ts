@@ -199,8 +199,89 @@ export function buildTutorialContract(issuerBodyId: string | null, bodies: Celes
 
 export function upsertTutorialContract(contracts: SpaceContract[], issuerBodyId: string | null, bodies: CelestialBody[]): SpaceContract[] {
   const tutorialContract = buildTutorialContract(issuerBodyId, bodies);
+  const existingTutorial = contracts.find((contract) => contract.id === TUTORIAL_CONTRACT_ID);
   const withoutTutorial = contracts.filter((contract) => contract.id !== TUTORIAL_CONTRACT_ID);
-  return tutorialContract ? [...withoutTutorial, tutorialContract] : withoutTutorial;
+  if (!tutorialContract) return withoutTutorial;
+  const restoredTutorial = existingTutorial
+    ? {
+        ...tutorialContract,
+        ...existingTutorial,
+        id: TUTORIAL_CONTRACT_ID,
+        isTutorial: true,
+        trainingMissionId: "first-paid-run" as const,
+      }
+    : tutorialContract;
+  return [...withoutTutorial, restoredTutorial];
+}
+
+function getCargoUsedTons(ship: GameState["ship"]) {
+  return Object.values(ship.cargo).reduce((total, amount) => total + (amount || 0), 0);
+}
+
+export function reconcileFirstPaidRunTutorialContract(state: GameState): {
+  state: GameState;
+  changed: boolean;
+  blocked: boolean;
+  accepted: boolean;
+  loadedCargoTons: number;
+} {
+  if (
+    state.tutorialSkipped
+    || state.tutorialCompleted
+    || state.activeTutorialStep !== "first-paid-run"
+  ) {
+    return { state, changed: false, blocked: false, accepted: false, loadedCargoTons: 0 };
+  }
+
+  const tutorialContract = state.contracts.find((contract) => contract.id === TUTORIAL_CONTRACT_ID);
+  if (!tutorialContract || tutorialContract.completed || tutorialContract.failed) {
+    return { state, changed: false, blocked: false, accepted: false, loadedCargoTons: 0 };
+  }
+
+  let nextShip = state.ship;
+  let loadedCargoTons = 0;
+
+  if (tutorialContract.type === "delivery" && tutorialContract.cargoType) {
+    const requiredAmount = tutorialContract.amount || 0;
+    const currentAmount = nextShip.cargo[tutorialContract.cargoType] || 0;
+    const missingAmount = Math.max(0, requiredAmount - currentAmount);
+    if (missingAmount > 0) {
+      const cargoLimit = nextShip.cargoCapacityTons ?? nextShip.cargoCapacity;
+      if (getCargoUsedTons(nextShip) + missingAmount > cargoLimit) {
+        return { state, changed: false, blocked: true, accepted: false, loadedCargoTons: 0 };
+      }
+
+      loadedCargoTons = missingAmount;
+      nextShip = {
+        ...nextShip,
+        cargo: {
+          ...nextShip.cargo,
+          [tutorialContract.cargoType]: currentAmount + missingAmount,
+        },
+      };
+    }
+  }
+
+  const shouldAccept = !tutorialContract.accepted;
+  if (!shouldAccept && loadedCargoTons <= 0) {
+    return { state, changed: false, blocked: false, accepted: false, loadedCargoTons: 0 };
+  }
+
+  return {
+    state: {
+      ...state,
+      ship: nextShip,
+      contracts: state.contracts.map((contract) => (
+        contract.id === TUTORIAL_CONTRACT_ID
+          ? { ...contract, accepted: true, failed: false }
+          : contract
+      )),
+    },
+    changed: true,
+    blocked: false,
+    accepted: shouldAccept,
+    loadedCargoTons,
+  };
 }
 
 export function getTutorialObjective(
@@ -286,7 +367,7 @@ export function getTutorialObjective(
         id: "first-paid-run",
         title: tutorialContract?.title || "First Paid Run",
         summary: tutorialContract?.description || "Take a small paid run to prove you can accept, track, and finish a contract.",
-        instruction: "Open the contract board, accept the training manifest, then fly it to the destination and submit it like a normal job.",
+        instruction: "The training manifest is loaded automatically. Fly it to the destination and submit it from the contract board like a normal job.",
         details: [
           `Issuer: ${tutorialContract?.issuerName || getDisplayPortName(startBody)}`,
           `Destination: ${tutorialContract?.destinationName || "Assigned training port"}`,

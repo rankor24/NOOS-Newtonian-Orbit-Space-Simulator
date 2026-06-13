@@ -28,134 +28,179 @@ export const ShipyardPanel: React.FC<ShipyardPanelProps> = ({
   const installedUpgrades = UPGRADES.filter((upgrade) => unlockedUpgradeIds.includes(upgrade.id)).length;
 
   return (
-    <div className="space-y-5 font-sans">
-      <div className="elite-station-panel-shell">
-        <div className="elite-station-panel-header">
-          <div>
-            <h3 className="elite-station-panel-title">
-              <Wrench className="w-4 h-4" /> Shipyard and Outfitting
-            </h3>
-            <p className="elite-station-panel-subtitle">Berth management, hull acquisition, and installed module work.</p>
-          </div>
-          <div className="elite-station-panel-credit">
+    <section className="elite-terminal-screen">
+      <header className="elite-terminal-header">
+        <div>
+          <span className="elite-terminal-kicker">Shipyard / Outfitting</span>
+          <h3 className="elite-terminal-title">{ship.name}</h3>
+          <p className="elite-terminal-copy">
+            {(ship.manufacturer || "Independent Yard").toUpperCase()} / CARGO {Math.round(ship.cargoCapacityTons ?? ship.cargoCapacity)}T / BERTHS {ship.passengerCapacity}
+          </p>
+        </div>
+        <div className="elite-terminal-actions">
+          <div className="elite-terminal-credit-box">
             <span>Credit Buffer</span>
-            <strong><Coins className="w-4 h-4" /> {playerCredits.toLocaleString()} cr</strong>
+            <strong><Coins size={14} /> {playerCredits.toLocaleString()} cr</strong>
           </div>
         </div>
+      </header>
 
-        <div className="elite-shipyard-overview">
-          <div>
-            <span>Active Hull</span>
-            <strong>{ship.name}</strong>
-            <small>{ship.manufacturer || "Independent Yard"} • cargo {(ship.cargoCapacityTons ?? ship.cargoCapacity).toFixed(0)}t</small>
-          </div>
-          <div>
-            <span>Installed Upgrades</span>
-            <strong>{installedUpgrades}</strong>
-            <small>{ship.warpCapacity ? `Warp ${ship.maxWarpRange} LY` : "No interstellar drive"}</small>
-          </div>
-          <div>
-            <span>Berthed Hulls</span>
-            <strong>{dockedPortInventory.length}</strong>
-            <small>Only local hulls can be made active here.</small>
-          </div>
-        </div>
-      </div>
-
-      <div className="elite-station-section">
-        <div className="elite-station-section-heading">
-          <Rocket className="w-4 h-4" />
-          <span>Berthed Hulls</span>
-        </div>
-        <div className="elite-shipyard-grid">
-          {dockedPortInventory.length > 0 ? dockedPortInventory.map((entry) => (
-            <div key={entry.id} className="elite-shipyard-card">
-              <div>
-                <strong>{entry.name}</strong>
-                <small>{entry.ship.manufacturer} • cargo {entry.ship.cargoCapacityTons ?? entry.ship.cargoCapacity}t • berths {entry.ship.passengerCapacity}</small>
-              </div>
-              <button
-                type="button"
-                disabled={ship.id === entry.id}
-                onClick={() => onActivateShip(entry.id)}
-                className={ship.id === entry.id ? "is-disabled" : ""}
-              >
-                {ship.id === entry.id ? "Active Hull" : "Make Active"}
-              </button>
-            </div>
-          )) : (
-            <div className="elite-shipyard-empty">No additional hulls are berthed at this port.</div>
-          )}
-        </div>
-      </div>
-
-      <div className="elite-station-section">
-        <div className="elite-station-section-heading">
-          <Settings2 className="w-4 h-4" />
-          <span>Hull Market</span>
-        </div>
-        <div className="elite-shipyard-grid">
-          {shipyardCatalog.map((entry) => (
-            <div key={entry.id} className="elite-shipyard-card">
-              <div>
-                <strong>{entry.name}</strong>
-                <small>{entry.manufacturer} • {entry.class.toUpperCase()}</small>
-                <p>{entry.description}</p>
-              </div>
-              <div className="elite-shipyard-actions">
-                <span>{entry.baseCost.toLocaleString()} cr</span>
-                <button
-                  type="button"
-                  disabled={playerCredits < entry.baseCost}
-                  onClick={() => onBuyShip(entry.id)}
-                  className={playerCredits < entry.baseCost ? "is-disabled" : ""}
-                >
-                  Buy Hull
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="elite-station-section">
-        <div className="elite-station-section-heading">
-          <Wrench className="w-4 h-4" />
+      <div className="elite-terminal-grid elite-terminal-grid-4">
+        <div className="elite-terminal-stat">
           <span>Installed Modules</span>
+          <strong>{installedUpgrades}</strong>
         </div>
-        <div className="elite-upgrade-grid">
-          {UPGRADES.map((upgrade) => {
-            const isUnlocked = unlockedUpgradeIds.includes(upgrade.id);
-            const needsCredits = playerCredits < upgrade.cost;
-            return (
-              <div key={upgrade.id} className={`elite-upgrade-card${isUnlocked ? " is-installed" : ""}`}>
-                <div>
-                  <span>{upgrade.category.toUpperCase()}</span>
-                  <strong>{upgrade.name}</strong>
-                  <p>{upgrade.description}</p>
-                </div>
-                <div className="elite-shipyard-actions">
-                  {isUnlocked ? (
-                    <span>Installed</span>
-                  ) : (
-                    <>
-                      <span>{upgrade.cost.toLocaleString()} cr</span>
+        <div className="elite-terminal-stat">
+          <span>Warp Capacity</span>
+          <strong>{ship.warpCapacity ? `${ship.maxWarpRange} LY` : "Offline"}</strong>
+        </div>
+        <div className="elite-terminal-stat">
+          <span>Berthed Hulls</span>
+          <strong>{dockedPortInventory.length}</strong>
+        </div>
+        <div className="elite-terminal-stat">
+          <span>Fuel Capacity</span>
+          <strong>{Math.round(ship.maxFuel).toLocaleString()} kg</strong>
+        </div>
+      </div>
+
+      <div className="elite-terminal-section">
+        <div className="elite-terminal-section-bar">
+          <span><Rocket size={14} /> Berthed Hulls</span>
+          <strong>{dockedPortInventory.length > 0 ? "Local Inventory" : "No Stored Hulls"}</strong>
+        </div>
+        {dockedPortInventory.length > 0 ? (
+          <div className="elite-terminal-table-wrap">
+            <table className="elite-terminal-table">
+              <thead>
+                <tr>
+                  <th>Hull</th>
+                  <th>Manufacturer</th>
+                  <th className="is-number">Cargo</th>
+                  <th className="is-number">Berths</th>
+                  <th className="is-number">Fuel</th>
+                  <th className="is-actions">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dockedPortInventory.map((entry) => (
+                  <tr key={entry.id}>
+                    <td className="is-strong">{entry.name}</td>
+                    <td>{entry.ship.manufacturer || "Unknown"}</td>
+                    <td className="is-number">{entry.ship.cargoCapacityTons ?? entry.ship.cargoCapacity} t</td>
+                    <td className="is-number">{entry.ship.passengerCapacity}</td>
+                    <td className="is-number">{Math.round(entry.ship.maxFuel).toLocaleString()} kg</td>
+                    <td className="is-actions">
                       <button
                         type="button"
-                        disabled={needsCredits}
-                        onClick={() => onUnlockUpgrade(upgrade.id)}
-                        className={needsCredits ? "is-disabled" : ""}
+                        className={`elite-terminal-button${ship.id === entry.id ? " is-active" : ""}`}
+                        disabled={ship.id === entry.id}
+                        onClick={() => onActivateShip(entry.id)}
                       >
-                        Install
+                        {ship.id === entry.id ? "Active Hull" : "Make Active"}
                       </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="elite-terminal-note">No additional hulls are berthed at this port.</div>
+        )}
+      </div>
+
+      <div className="elite-terminal-section">
+        <div className="elite-terminal-section-bar">
+          <span><Settings2 size={14} /> Hull Market</span>
+          <strong>{shipyardCatalog.length} Listed Frames</strong>
+        </div>
+        <div className="elite-terminal-table-wrap">
+          <table className="elite-terminal-table">
+            <thead>
+              <tr>
+                <th>Frame</th>
+                <th>Builder</th>
+                <th>Description</th>
+                <th className="is-number">Class</th>
+                <th className="is-number">Cost</th>
+                <th className="is-actions">Acquire</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shipyardCatalog.map((entry) => (
+                <tr key={entry.id}>
+                  <td className="is-strong">{entry.name}</td>
+                  <td>{entry.manufacturer}</td>
+                  <td>{entry.description}</td>
+                  <td className="is-number">{entry.class.toUpperCase()}</td>
+                  <td className="is-number elite-value-amber">{entry.baseCost.toLocaleString()} cr</td>
+                  <td className="is-actions">
+                    <button
+                      type="button"
+                      className="elite-terminal-button"
+                      disabled={playerCredits < entry.baseCost}
+                      onClick={() => onBuyShip(entry.id)}
+                    >
+                      Buy Hull
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
-    </div>
+
+      <div className="elite-terminal-section">
+        <div className="elite-terminal-section-bar">
+          <span><Wrench size={14} /> Installed Modules</span>
+          <strong>Upgrade Matrix</strong>
+        </div>
+        <div className="elite-terminal-table-wrap">
+          <table className="elite-terminal-table">
+            <thead>
+              <tr>
+                <th>Module</th>
+                <th>Category</th>
+                <th>Description</th>
+                <th className="is-number">Cost</th>
+                <th className="is-actions">State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {UPGRADES.map((upgrade) => {
+                const isUnlocked = unlockedUpgradeIds.includes(upgrade.id);
+                const needsCredits = playerCredits < upgrade.cost;
+                return (
+                  <tr key={upgrade.id}>
+                    <td className="is-strong">{upgrade.name}</td>
+                    <td>{upgrade.category.toUpperCase()}</td>
+                    <td>{upgrade.description}</td>
+                    <td className={`is-number ${isUnlocked ? "elite-value-green" : "elite-value-amber"}`}>
+                      {isUnlocked ? "Installed" : `${upgrade.cost.toLocaleString()} cr`}
+                    </td>
+                    <td className="is-actions">
+                      {isUnlocked ? (
+                        <span className="elite-terminal-state is-ok">Installed</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="elite-terminal-button"
+                          disabled={needsCredits}
+                          onClick={() => onUnlockUpgrade(upgrade.id)}
+                        >
+                          Install
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   );
 };

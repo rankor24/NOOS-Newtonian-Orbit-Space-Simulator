@@ -56,26 +56,31 @@ export function buildUndockState(
   const offsetLength = Math.hypot(offsetX, offsetY);
   const ux = offsetLength > 1 ? offsetX / offsetLength : 1;
   const uy = offsetLength > 1 ? offsetY / offsetLength : 0;
-  const departureRadius = dockBody.type === "station"
-    ? (dockBody.radius ?? 0) + 25_000
-    : (dockBody.radius ?? 0) + Math.max(1_500_000, (dockBody.radius ?? 0) * 0.08);
+  const dockingSpecs = getDockingSpecs(dockBody);
+  const departureRadius = Math.max(
+    dockingSpecs.maxDistance * 1.12,
+    dockBody.type === "station"
+      ? (dockBody.radius ?? 0) + 450_000
+      : (dockBody.radius ?? 0) + Math.max(1_500_000, (dockBody.radius ?? 0) * 0.08),
+  );
   const targetMass = dockBody.type === "star" ? (dockBody.mass ?? 0) * 1.989e30 : (dockBody.mass ?? 0);
   const circularSpeed = targetMass > 0 ? Math.sqrt((6.6743e-11 * targetMass) / Math.max(1, departureRadius)) : 0;
   const tangentX = -uy;
   const tangentY = ux;
+  const departureDriftSpeed = dockBody.type === "station" ? 35 : 12;
 
   return {
     ship: {
       ...ship,
       x: bodyPos.x + ux * departureRadius,
       y: bodyPos.y + uy * departureRadius,
-      vx: bodyVelocity.vx + tangentX * circularSpeed,
-      vy: bodyVelocity.vy + tangentY * circularSpeed,
+      vx: bodyVelocity.vx + tangentX * circularSpeed + ux * departureDriftSpeed,
+      vy: bodyVelocity.vy + tangentY * circularSpeed + uy * departureDriftSpeed,
       throttlePercent: 0,
     },
     departureLock: {
       bodyId: dockBody.id,
-      releaseDistance: getDockingSpecs(dockBody).maxDistance * 1.05,
+      releaseDistance: dockingSpecs.maxDistance * 1.05,
     },
   };
 }
