@@ -6,14 +6,17 @@
 import { GameState, ResourceMarket, MarketState, SpaceContract, ShipUpgrade, ShipState, PlayerProfile, OwnedShipRecord, CelestialBody } from "../types";
 import { STARS, AU } from "../data/stars";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "../data/ships";
+import { getDockingParkingRadius } from "./docking";
 import { getAbsoluteBodyPosition, getBodyVelocity } from "./physics";
 import {
   getAllPortsForBodies,
   getPortContractTemplates,
   getPortMarketProfile,
   makePortContract,
+  pickDockingPortForBody,
 } from "./worldText";
 import { SAVE_VERSION } from "./saveSystem";
+import { pickTutorialDockTargetBodyId, upsertTutorialContract } from "./tutorial";
 
 const START_STATION_ID = "station_earth_low";
 const START_PORT_ID = "station_earth_low";
@@ -122,6 +125,15 @@ export const UPGRADES: ShipUpgrade[] = [
     modifier: (ship) => ({ ...ship, scannerRangeLy: 24, systemScannerRange: 20 * AU }),
   },
   {
+    id: "galactic_chart",
+    name: "Galactic Survey Link",
+    description: "Re-links the bridge nav computer to the long-range stellar chart. Required to reopen the Galactic Map interface.",
+    cost: 9800,
+    unlocked: false,
+    category: "sensor",
+    modifier: (ship) => ({ ...ship }),
+  },
+  {
     id: "passenger_i",
     name: "Orbital Transfer Pod Rack",
     description: "Installs compact passenger transfer pods. Enables 4 passenger berths for crew, courier, and civilian transport contracts.",
@@ -206,6 +218,8 @@ export function generateMarketsForStar(starId: string): { [portId: string]: { [r
         available: Math.max(0, Math.floor(capacity * (0.35 + ((portSeed * 17) % 40) / 100))),
         maxCapacity: capacity,
         basePrice: res.basePrice,
+        baselineBuyPrice: buyPrice,
+        baselineSellPrice: sellPrice,
       };
     }
 
@@ -249,6 +263,8 @@ export function generateInitialContracts(): SpaceContract[] {
       passengerCount: template.type === "passenger" ? Math.max(1, Math.ceil((template.amount || 2) / 2)) : undefined,
       completed: false,
       accepted: false,
+      failed: false,
+      deadline: 18 * 3600 + (routeIndex * 4 + templateIndex * 3) * 3600,
     }, issuer, destination, `${issuer.name} → ${destination.name}`));
   });
 
@@ -269,6 +285,8 @@ export function generateInitialContracts(): SpaceContract[] {
     passengerCount: 3,
     completed: false,
     accepted: false,
+    failed: false,
+    deadline: 40 * 3600,
   });
 
   return procedural;
@@ -368,6 +386,57 @@ function placeShipNearBody(ship: ShipState, bodies: CelestialBody[], bodyId: str
   };
 }
 
+export function createDockedSpawn(
+  ship: ShipState,
+  bodies: CelestialBody[],
+  bodyId: string,
+  gameTime: number,
+): {
+  ship: ShipState;
+  selectedBodyId: string;
+  isDocked: boolean;
+  dockedBodyId: string | null;
+  dockedPortId: string | null;
+} {
+  const body = bodies.find((entry) => entry.id === bodyId);
+  const dockPort = pickDockingPortForBody(body);
+  if (!body || !dockPort) {
+    return {
+      ship: placeShipNearBody(ship, bodies, bodyId, gameTime),
+      selectedBodyId: bodyId,
+      isDocked: false,
+      dockedBodyId: null,
+      dockedPortId: null,
+    };
+  }
+
+  const bodyPos = getAbsoluteBodyPosition(body.id, bodies, gameTime);
+  const bodyVelocity = getBodyVelocity(body.id, bodies, gameTime);
+  const parentPos = body.parentId ? getAbsoluteBodyPosition(body.parentId, bodies, gameTime) : { x: 0, y: 0 };
+  const awayX = bodyPos.x - parentPos.x;
+  const awayY = bodyPos.y - parentPos.y;
+  const awayLength = Math.hypot(awayX, awayY);
+  const ux = awayLength > 1 ? awayX / awayLength : 1;
+  const uy = awayLength > 1 ? awayY / awayLength : 0;
+  const parkingDistance = getDockingParkingRadius(body);
+
+  return {
+    ship: {
+      ...ship,
+      x: bodyPos.x + ux * parkingDistance,
+      y: bodyPos.y + uy * parkingDistance,
+      vx: bodyVelocity.vx,
+      vy: bodyVelocity.vy,
+      heading: Math.atan2(-uy, -ux),
+      throttlePercent: 0,
+    },
+    selectedBodyId: body.id,
+    isDocked: true,
+    dockedBodyId: body.id,
+    dockedPortId: dockPort.id,
+  };
+}
+
 export function createInitialState(commanderName = "Commander"): GameState {
   const initialMarkets: MarketState = {};
   STARS.forEach((s) => {
@@ -375,13 +444,15 @@ export function createInitialState(commanderName = "Commander"): GameState {
   });
 
   const sol = STARS.find((star) => star.id === "star_sol") || STARS[0];
-  const initialShip = placeShipNearBody(createStarterShip(), sol.planets, START_STATION_ID, 0);
+  const initialSpawn = createDockedSpawn(createStarterShip(), sol.planets, START_STATION_ID, 0);
+  const initialShip = initialSpawn.ship;
+  const tutorialTargetBodyId = pickTutorialDockTargetBodyId(START_STATION_ID, sol.planets);
   const shipRecord: OwnedShipRecord = {
     id: initialShip.id || "starter_sidewinder_ship",
     hullId: initialShip.hullId || SIDEWINDER_STARTER_PROFILE.id,
     name: initialShip.name,
     ship: initialShip,
-    homePortId: START_PORT_ID,
+    homePortId: initialSpawn.dockedPortId || START_PORT_ID,
   };
 
   return {
@@ -402,19 +473,30 @@ export function createInitialState(commanderName = "Commander"): GameState {
     activeShipId: shipRecord.id,
     unlockedUpgradeIds: [],
     markets: initialMarkets,
-    contracts: generateInitialContracts(),
+    marketsLastUpdatedDay: 0,
+    contracts: upsertTutorialContract(generateInitialContracts(), tutorialTargetBodyId || START_STATION_ID, sol.planets),
+    contractsLastRefreshDay: 0,
+    discoveredStarIds: ["star_sol"],
+    scannedBodyIds: [START_STATION_ID],
+    surveyDataByBody: {},
+    tutorialSkipped: false,
+    tutorialCompleted: false,
+    activeTutorialStep: "bay-clearance",
+    completedTrainingMissionIds: [],
+    tutorialStartBodyId: START_STATION_ID,
+    tutorialTargetBodyId,
     logs: [
       {
         timestamp: "Year 2086, Day 01 - 00:00:00",
-        text: `Log initialized. ${commanderName} online in Sidewinder-class starter ship near Orbital Tether One high Earth orbit.`,
+        text: `Log initialized. ${commanderName} online in Sidewinder-class starter ship docked at Orbital Tether One high Earth orbit.`,
         type: "info",
       },
     ],
-    selectedBodyId: START_STATION_ID,
+    selectedBodyId: initialSpawn.selectedBodyId,
     miningTargetId: null,
-    isDocked: false,
-    dockedBodyId: null,
-    dockedPortId: null,
+    isDocked: initialSpawn.isDocked,
+    dockedBodyId: initialSpawn.dockedBodyId,
+    dockedPortId: initialSpawn.dockedPortId,
   };
 }
 

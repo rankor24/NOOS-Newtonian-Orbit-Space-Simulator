@@ -5,7 +5,7 @@
 
 import { GameState } from "../types";
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 4;
 const LEGACY_SAVE_KEY = "newtonian_orbit_save";
 const PROFILE_INDEX_KEY = "newtonian_orbit_profiles";
 const CURRENT_PROFILE_KEY = "newtonian_orbit_current_profile";

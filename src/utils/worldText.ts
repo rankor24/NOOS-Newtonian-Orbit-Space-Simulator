@@ -142,6 +142,10 @@ export function pickPortForBody(body: CelestialBody | null | undefined, service?
   return ports.find((port) => port.services.includes(service)) || ports[0] || null;
 }
 
+export function pickDockingPortForBody(body: CelestialBody | null | undefined): PortRecord | null {
+  return pickPortForBody(body, "markets") || pickPortForBody(body);
+}
+
 export function generateDockingDeniedMessage(body: CelestialBody | null | undefined): string {
   return `${getDisplayPortName(body)} traffic control: ${pickRandom(DOCKING_DENIED)}`;
 }

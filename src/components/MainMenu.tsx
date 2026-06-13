@@ -19,6 +19,7 @@ import {
   Power
 } from "lucide-react";
 import { CommanderProfileSummary } from "../utils/saveSystem";
+import { TUTORIAL_PROMPT_PREFERENCE_KEY } from "../utils/tutorial";
 
 interface MainMenuProps {
   profiles: CommanderProfileSummary[];
@@ -28,6 +29,7 @@ interface MainMenuProps {
     name: string;
     starId: string;
     profession: "miner" | "merchant" | "explorer";
+    tutorialMode: "start" | "skip";
   }) => void;
   uiTheme: "amber" | "blue" | "green" | "red";
   setUiTheme: (theme: "amber" | "blue" | "green" | "red") => void;
@@ -95,6 +97,8 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   const [cmdrName, setCmdrName] = useState("");
   const [selectedStarId, setSelectedStarId] = useState("star_sol");
   const [selectedProfession, setSelectedProfession] = useState<"miner" | "merchant" | "explorer">("merchant");
+  const [tutorialMode, setTutorialMode] = useState<"start" | "skip">(() => localStorage.getItem(TUTORIAL_PROMPT_PREFERENCE_KEY) === "skip" ? "skip" : "start");
+  const [rememberTutorialChoice, setRememberTutorialChoice] = useState(false);
   
   // Fancy Starfield Drift Canvas
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -187,8 +191,12 @@ export const MainMenu: React.FC<MainMenuProps> = ({
     onCreateProfile({
       name: cmdrName.trim(),
       starId: selectedStarId,
-      profession: selectedProfession
+      profession: selectedProfession,
+      tutorialMode,
     });
+    if (rememberTutorialChoice) {
+      localStorage.setItem(TUTORIAL_PROMPT_PREFERENCE_KEY, tutorialMode);
+    }
   };
 
   const getThemeAccentClass = () => {
@@ -520,6 +528,45 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div className="space-y-3 text-left border border-stone-800 rounded-lg bg-stone-950/40 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <span className="text-xs font-bold text-stone-400 uppercase tracking-widest block">Flight Training Enrollment</span>
+                  <p className="text-[10px] text-stone-500 mt-1 uppercase">New commanders can start with guided flight certification or skip straight to free operations.</p>
+                </div>
+                <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded border ${tutorialMode === "start" ? getThemeBgClass() : "bg-stone-950 border-stone-800 text-stone-500"}`}>
+                  {tutorialMode === "start" ? "Training Enabled" : "Training Skipped"}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setTutorialMode("start")}
+                  className={`text-left rounded-lg border p-3 transition-colors ${tutorialMode === "start" ? "border-amber-500 bg-stone-900/80" : "border-stone-800 bg-stone-900/30 hover:border-stone-700"}`}
+                >
+                  <strong className="block text-xs uppercase text-slate-100">Start Training</strong>
+                  <span className="block text-[10px] text-stone-400 mt-1">Begin with Bay Clearance, vector control, match-speed, docking, and a first paid run.</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTutorialMode("skip")}
+                  className={`text-left rounded-lg border p-3 transition-colors ${tutorialMode === "skip" ? "border-amber-500 bg-stone-900/80" : "border-stone-800 bg-stone-900/30 hover:border-stone-700"}`}
+                >
+                  <strong className="block text-xs uppercase text-slate-100">Skip Training</strong>
+                  <span className="block text-[10px] text-stone-400 mt-1">Start immediately with the sandbox. Flight certification can still be resumed later from the contract board.</span>
+                </button>
+              </div>
+              <label className="flex items-center gap-2 text-[10px] text-stone-400 uppercase tracking-wide">
+                <input
+                  type="checkbox"
+                  checked={rememberTutorialChoice}
+                  onChange={(event) => setRememberTutorialChoice(event.target.checked)}
+                  className="accent-amber-500"
+                />
+                Do Not Ask Again
+              </label>
             </div>
 
             {/* Form actions */}

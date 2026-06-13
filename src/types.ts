@@ -72,6 +72,8 @@ export interface ResourceMarket {
   available: number;
   maxCapacity: number;
   basePrice: number;
+  baselineBuyPrice?: number;
+  baselineSellPrice?: number;
 }
 
 export interface MarketState {
@@ -178,6 +180,8 @@ export interface OwnedShipRecord {
   homePortId: string | null;
 }
 
+export type TutorialStepId = "bay-clearance" | "hold-vector" | "match-speed" | "docking-practice" | "first-paid-run";
+
 export interface SpaceContract {
   id: string;
   title: string;
@@ -197,7 +201,10 @@ export interface SpaceContract {
   passengerCount?: number;
   completed: boolean;
   accepted: boolean;
+  failed?: boolean;
   deadline?: number;
+  isTutorial?: boolean;
+  trainingMissionId?: TutorialStepId;
   targetOrbitSemiMajorAxis?: number;
   targetOrbitEccentricity?: number;
 }
@@ -235,7 +242,18 @@ export interface GameState {
   activeShipId: string;
   unlockedUpgradeIds: string[];
   markets: MarketState;
+  marketsLastUpdatedDay: number;
   contracts: SpaceContract[];
+  contractsLastRefreshDay: number;
+  discoveredStarIds: string[];
+  scannedBodyIds: string[];
+  surveyDataByBody: Record<string, number>;
+  tutorialSkipped: boolean;
+  tutorialCompleted: boolean;
+  activeTutorialStep: TutorialStepId | null;
+  completedTrainingMissionIds: TutorialStepId[];
+  tutorialStartBodyId: string | null;
+  tutorialTargetBodyId: string | null;
   logs: MissionLog[];
   selectedBodyId: string | null;
   miningTargetId: string | null;

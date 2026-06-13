@@ -2,7 +2,5 @@
   "name": "Newtonian Orbit Space Simulator",
   "description": "An immersive space strategy and flight simulator game following Newtonian physics for spacecraft and Keplerian mechanics for celestial bodies.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": []
 }

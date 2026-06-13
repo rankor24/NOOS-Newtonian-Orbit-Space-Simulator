@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Compass, Crosshair, Move, Zap, Maximize2 } from "lucide-react";
+import { Maximize2, Move } from "lucide-react";
 import { CelestialBody, GameState, SystemFeature } from "../types";
 import shipSpriteUrl from "../assets/ship.svg";
 import { getAbsoluteBodyPosition, getDominantGravitySource, getSphereOfInfluence, predictShipRoute, buildBodyPositionCache, BodyPosCache, isOrbitReferenceBody, resolveOrbitReferenceBody } from "../utils/physics";
@@ -1079,12 +1079,13 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
         ? Math.max(7200, Math.min(86400 * 5, (targetDistance / shipSpeed) * 2.2))
         : 86400 * 3;
       const routeStartedAt = performance.now();
+      const routeSteps = Math.max(96, Math.min(240, Math.ceil(routeDuration / 120)));
       const rawRoute = predictShipRoute(
         ship,
         bodies,
         gameTime,
         routeDuration,
-        96,
+        routeSteps,
         0
       );
 
@@ -1100,18 +1101,26 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
     const route = prognosis.points;
     if (route.length < 2) return;
 
+    const screenRoute = route.map((point) => toScreen(point, center, width, height));
+    ctx.save();
     ctx.setLineDash([]);
-    ctx.lineWidth = 1.5;
-    for (let index = 1; index < route.length; index++) {
-      const prev = toScreen(route[index - 1], center, width, height);
-      const next = toScreen(route[index], center, width, height);
-      const alpha = clamp(0.92 - index / route.length * 0.55, 0.22, 0.92);
-      ctx.strokeStyle = colorWithAlpha(palette.accent, alpha);
-      ctx.beginPath();
-      ctx.moveTo(prev.x, prev.y);
-      ctx.lineTo(next.x, next.y);
-      ctx.stroke();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = colorWithAlpha(palette.accent, 0.8);
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(screenRoute[0].x, screenRoute[0].y);
+    for (let index = 1; index < screenRoute.length - 1; index++) {
+      const current = screenRoute[index];
+      const next = screenRoute[index + 1];
+      const midX = (current.x + next.x) / 2;
+      const midY = (current.y + next.y) / 2;
+      ctx.quadraticCurveTo(current.x, current.y, midX, midY);
     }
+    const lastPoint = screenRoute[screenRoute.length - 1];
+    ctx.lineTo(lastPoint.x, lastPoint.y);
+    ctx.stroke();
+    ctx.restore();
 
     const tickEvery = Math.max(8, Math.floor(route.length / 8));
     route.forEach((point, index) => {
@@ -1436,47 +1445,7 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
   return (
     <div className="star-system-canvas-shell relative w-full h-[22rem] sm:h-[26rem] lg:h-[28rem] xl:h-[32rem] bg-stone-950 rounded-xl overflow-hidden border border-stone-800 flex flex-col font-sans select-none shadow-2xl">
       {!hideCameraControls && (
-        <div className="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-          <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-stone-800 bg-stone-950/88 p-1 text-xs shadow-lg backdrop-blur">
-            <button
-              type="button"
-              onClick={() => setMode("star")}
-              title="Center the map on the system primary"
-              className={`flex items-center gap-1 rounded px-2 py-1 transition ${cameraMode === "star" ? "bg-amber-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
-            >
-              <Zap className="h-3.5 w-3.5" />
-              STAR
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("ship")}
-              title="Center the map on the player ship"
-              className={`flex items-center gap-1 rounded px-2 py-1 transition ${cameraMode === "ship" ? "bg-sky-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
-            >
-              <Compass className="h-3.5 w-3.5" />
-              SHIP
-            </button>
-            <button
-              type="button"
-              disabled={!selectedBodyId}
-              onClick={() => setMode("target")}
-              title={selectedBodyId ? "Center the map on the selected target" : "Select a target to enable target view"}
-              className={`flex items-center gap-1 rounded px-2 py-1 transition ${!selectedBodyId ? "cursor-not-allowed opacity-35" : cameraMode === "target" ? "bg-orange-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
-            >
-              <Crosshair className="h-3.5 w-3.5" />
-              TARGET
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("fit")}
-              className={`flex items-center gap-1 rounded px-2 py-1 transition ${cameraMode === "fit" ? "bg-emerald-500 text-stone-950 font-bold" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
-              title="Auto-zoom to fit ship and nearest body or target in view"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-              FIT
-            </button>
-          </div>
-
+        <div className="absolute top-3 left-3 right-3 z-10 flex justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-stone-800 bg-stone-950/88 px-2 py-1.5 text-xs shadow-lg backdrop-blur">
             <span className="text-[10px] font-bold uppercase tracking-wider text-stone-500">Zoom</span>
             <input
@@ -1491,6 +1460,14 @@ export const StarSystemCanvas: React.FC<CanvasProps> = ({
               }}
               className="w-28 accent-sky-500"
             />
+            <button
+              type="button"
+              onClick={() => setMode("fit")}
+              className={`rounded p-1 transition ${cameraMode === "fit" ? "bg-emerald-500 text-stone-950" : "text-stone-400 hover:bg-stone-800 hover:text-white"}`}
+              title="Auto-zoom to fit ship and nearest body or target in view"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </button>
             <button
               type="button"
               onClick={resetView}

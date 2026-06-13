@@ -1,8 +1,9 @@
 import { AU, STARS, getOrCreatePlayableStar } from "../../data/stars";
 import { SIDEWINDER_STARTER_PROFILE, DEFAULT_POWER_DISTRIBUTION } from "../../data/ships";
-import { GameState, MissionLog, ShipState } from "../../types";
-import { createDefaultPlayerProfile, createInitialState, normalizeCargoManifest } from "../../utils/gameData";
-import { getAbsoluteBodyPosition, getBodyVelocity } from "../../utils/physics";
+import { GameState, MissionLog, ShipState, TutorialStepId } from "../../types";
+import { createDefaultPlayerProfile, createDockedSpawn, createInitialState, normalizeCargoManifest } from "../../utils/gameData";
+import { pickTutorialDockTargetBodyId, upsertTutorialContract } from "../../utils/tutorial";
+import { pickDockingPortForBody } from "../../utils/worldText";
 
 export const normalizePowerDistribution = (
   input: Partial<ShipState["powerDistribution"]> | undefined
@@ -25,7 +26,8 @@ export const normalizePowerDistribution = (
 export const createCustomInitialState = (
   name: string,
   starId: string,
-  profession: "miner" | "merchant" | "explorer"
+  profession: "miner" | "merchant" | "explorer",
+  tutorialMode: "start" | "skip" = "start",
 ): GameState => {
   getOrCreatePlayableStar(starId);
   const tempState = createInitialState(name);
@@ -56,7 +58,6 @@ export const createCustomInitialState = (
   }
 
   let startBodyId = tempState.selectedBodyId || "station_earth_low";
-  let startPortId = tempState.ownedShips[0]?.homePortId || "station_earth_low";
   const activePlayableStar = getOrCreatePlayableStar(starId) || STARS[0];
   const starPlanets = activePlayableStar.planets;
 
@@ -64,29 +65,27 @@ export const createCustomInitialState = (
     const startBody = starPlanets.find((body) => body.hasMarket) || starPlanets[0];
     if (startBody) {
       startBodyId = startBody.id;
-      startPortId = startBody.id;
-
-      const planetPos = getAbsoluteBodyPosition(startBody.id, starPlanets, 0);
-      const planetVelocity = getBodyVelocity(startBody.id, starPlanets, 0);
-      ship.x = planetPos.x + 2.5e7;
-      ship.y = planetPos.y;
-      ship.vx = planetVelocity.vx;
-      ship.vy = planetVelocity.vy + 1500;
     }
   }
 
+  const startBody = starPlanets.find((body) => body.id === startBodyId) || null;
+  const initialSpawn = createDockedSpawn(ship, starPlanets, startBodyId, 0);
+  const activeShip = initialSpawn.ship;
+  const startPortId = initialSpawn.dockedPortId || tempState.ownedShips[0]?.homePortId || startBodyId;
+  const startPortName = pickDockingPortForBody(startBody)?.name || startBody?.stationName || startBody?.name || activePlayableStar.name;
+
   const ownedShipRecord = {
-    id: ship.id || "starter_sidewinder_ship",
-    hullId: ship.hullId || SIDEWINDER_STARTER_PROFILE.id,
-    name: ship.name,
-    ship,
+    id: activeShip.id || "starter_sidewinder_ship",
+    hullId: activeShip.hullId || SIDEWINDER_STARTER_PROFILE.id,
+    name: activeShip.name,
+    ship: activeShip,
     homePortId: startPortId,
   };
 
   const logs: MissionLog[] = [
     {
       timestamp: "Year 2086, Day 01 - 00:00:00",
-      text: `Flight Certificate Activated. Commander ${name} online around ${activePlayableStar.name}. Starting alignment verified.`,
+      text: `Flight Certificate Activated. Commander ${name} docked and cleared at ${startPortName}.`,
       type: "info",
     },
     {
@@ -96,6 +95,9 @@ export const createCustomInitialState = (
     },
   ];
 
+  const tutorialTargetBodyId = pickTutorialDockTargetBodyId(startBodyId, starPlanets);
+  const tutorialSkipped = tutorialMode === "skip";
+
   return {
     ...tempState,
     profileId: `cmdr_${Date.now()}`,
@@ -104,8 +106,8 @@ export const createCustomInitialState = (
     playerCredits: startingCredits,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    selectedBodyId: startBodyId,
-    ship,
+    selectedBodyId: initialSpawn.selectedBodyId,
+    ship: activeShip,
     ownedShips: [ownedShipRecord],
     activeShipId: ownedShipRecord.id,
     playerProfile: {
@@ -119,7 +121,17 @@ export const createCustomInitialState = (
         security: { xp: 0, level: 1 },
       },
     },
+    contracts: upsertTutorialContract(tempState.contracts, tutorialTargetBodyId || startBodyId, starPlanets),
+    tutorialSkipped,
+    tutorialCompleted: false,
+    activeTutorialStep: tutorialSkipped ? null : "bay-clearance",
+    completedTrainingMissionIds: [],
+    tutorialStartBodyId: startBodyId,
+    tutorialTargetBodyId,
     logs,
+    isDocked: initialSpawn.isDocked,
+    dockedBodyId: initialSpawn.dockedBodyId,
+    dockedPortId: initialSpawn.dockedPortId,
   };
 };
 
@@ -127,6 +139,20 @@ export const migrateLoadedState = (parsed: any): GameState => {
   const parsedState = { ...(parsed || {}) };
   delete (parsedState as Record<string, unknown>)[["selected", "PortId"].join("")];
   const fallback = createInitialState(parsedState?.commanderName || "Commander");
+  const activePlayableStar = getOrCreatePlayableStar(parsedState?.activeStarId ?? fallback.activeStarId) || STARS[0];
+  const tutorialStartBodyId = parsedState?.tutorialStartBodyId ?? parsedState?.dockedBodyId ?? parsedState?.selectedBodyId ?? fallback.tutorialStartBodyId;
+  const tutorialTargetBodyId = parsedState?.tutorialTargetBodyId ?? pickTutorialDockTargetBodyId(tutorialStartBodyId, activePlayableStar.planets);
+  const inferredVeteran = (parsedState?.playerProfile?.stats?.dockingCount ?? 0) > 0
+    || (parsedState?.playerProfile?.stats?.contractsCompleted ?? 0) > 0
+    || (parsedState?.playerProfile?.totalPlayTimeSec ?? 0) > 900;
+  const completedTrainingMissionIds = Array.isArray(parsedState?.completedTrainingMissionIds)
+    ? parsedState.completedTrainingMissionIds as TutorialStepId[]
+    : inferredVeteran
+      ? ["bay-clearance", "hold-vector", "match-speed", "docking-practice", "first-paid-run"]
+      : [];
+  const tutorialCompleted = parsedState?.tutorialCompleted ?? inferredVeteran;
+  const tutorialSkipped = parsedState?.tutorialSkipped ?? false;
+  const activeTutorialStep = parsedState?.activeTutorialStep ?? (!tutorialSkipped && !tutorialCompleted ? fallback.activeTutorialStep : null);
   const ship = {
     ...fallback.ship,
     ...(parsedState?.ship || {}),
@@ -179,6 +205,18 @@ export const migrateLoadedState = (parsed: any): GameState => {
       reputation: { ...(parsedState?.playerProfile?.reputation || {}) },
       stats: { ...createDefaultPlayerProfile().stats, ...(parsedState?.playerProfile?.stats || {}) },
     },
+    marketsLastUpdatedDay: parsedState?.marketsLastUpdatedDay ?? fallback.marketsLastUpdatedDay,
+    contractsLastRefreshDay: parsedState?.contractsLastRefreshDay ?? fallback.contractsLastRefreshDay,
+    discoveredStarIds: Array.isArray(parsedState?.discoveredStarIds) && parsedState.discoveredStarIds.length > 0 ? parsedState.discoveredStarIds : fallback.discoveredStarIds,
+    scannedBodyIds: Array.isArray(parsedState?.scannedBodyIds) ? parsedState.scannedBodyIds : fallback.scannedBodyIds,
+    surveyDataByBody: { ...(parsedState?.surveyDataByBody || {}) },
+    contracts: upsertTutorialContract(Array.isArray(parsedState?.contracts) ? parsedState.contracts : fallback.contracts, tutorialTargetBodyId || tutorialStartBodyId, activePlayableStar.planets),
+    tutorialSkipped,
+    tutorialCompleted,
+    activeTutorialStep,
+    completedTrainingMissionIds,
+    tutorialStartBodyId,
+    tutorialTargetBodyId,
     commanderName: parsedState?.commanderName ?? fallback.commanderName,
     saveVersion: parsedState?.saveVersion ?? fallback.saveVersion,
     profileId: parsedState?.profileId ?? fallback.profileId,
