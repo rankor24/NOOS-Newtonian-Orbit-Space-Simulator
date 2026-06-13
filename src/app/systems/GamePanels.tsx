@@ -4,7 +4,7 @@ import { CommanderProfileSummary } from "../../utils/saveSystem";
 import { ShipyardCatalogEntry } from "../../utils/shipManagement";
 
 const MarketPanel = lazy(() => import("../../components/MarketPanel").then((m) => ({ default: m.MarketPanel })));
-const UpgradesPanel = lazy(() => import("../../components/UpgradesPanel").then((m) => ({ default: m.UpgradesPanel })));
+const ShipyardPanel = lazy(() => import("../../components/ShipyardPanel").then((m) => ({ default: m.ShipyardPanel })));
 const ContractsPanel = lazy(() => import("../../components/ContractsPanel").then((m) => ({ default: m.ContractsPanel })));
 const CommanderPanel = lazy(() => import("../../components/CommanderPanel").then((m) => ({ default: m.CommanderPanel })));
 const ProfilePanel = lazy(() => import("../../components/ProfilePanel").then((m) => ({ default: m.ProfilePanel })));
@@ -29,6 +29,7 @@ interface GamePanelsProps {
   onDock: () => void;
   onUndock: () => void;
   onRefuel: () => void;
+  onSellSurveyData: () => void;
   onToggleMining: () => void;
   onSelectPort: (portId: string) => void;
   onBuyShip: (modelId: string) => void;
@@ -36,6 +37,7 @@ interface GamePanelsProps {
   onUnlockUpgrade: (upgradeId: string) => void;
   onAcceptContract: (id: string) => void;
   onCompleteContract: (id: string) => void;
+  onResumeTutorial: () => void;
 }
 
 export function GamePanels({
@@ -54,6 +56,7 @@ export function GamePanels({
   onDock,
   onUndock,
   onRefuel,
+  onSellSurveyData,
   onToggleMining,
   onSelectPort,
   onBuyShip,
@@ -61,6 +64,7 @@ export function GamePanels({
   onUnlockUpgrade,
   onAcceptContract,
   onCompleteContract,
+  onResumeTutorial,
 }: GamePanelsProps) {
   return (
     <Suspense fallback={<LazyPanelFallback />}>
@@ -84,6 +88,7 @@ export function GamePanels({
             onDock={onDock}
             onUndock={onUndock}
             onRefuel={onRefuel}
+            onSellSurveyData={onSellSurveyData}
             onToggleMining={onToggleMining}
             onSelectPort={onSelectPort}
             onBuyShip={onBuyShip}
@@ -94,11 +99,15 @@ export function GamePanels({
           />
         )}
         {activeTab === "upgrades" && (
-          <UpgradesPanel
+          <ShipyardPanel
             ship={gameState.ship}
             playerCredits={gameState.playerCredits}
             unlockedUpgradeIds={gameState.unlockedUpgradeIds}
             onUnlockUpgrade={onUnlockUpgrade}
+            onBuyShip={onBuyShip}
+            onActivateShip={onActivateShip}
+            shipyardCatalog={shipyardCatalog}
+            dockedPortInventory={dockedPortInventory}
           />
         )}
         {activeTab === "contracts" && (
@@ -107,6 +116,7 @@ export function GamePanels({
             bodies={systemBodies}
             onAcceptContract={onAcceptContract}
             onCompleteContract={onCompleteContract}
+            onResumeTutorial={onResumeTutorial}
           />
         )}
       </>

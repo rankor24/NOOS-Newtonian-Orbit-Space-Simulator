@@ -5,20 +5,42 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback, type SetStateAction } from "react";
 import { StarSystemCanvas } from "./components/StarSystemCanvas";
+import { GalacticMap } from "./components/GalacticMap";
 import { EliteCockpitHud } from "./components/EliteCockpitHud";
+import { DockingSequenceModal } from "./components/DockingSequenceModal";
+import { TutorialHud } from "./components/TutorialHud";
 import { STARS, AU, getOrCreatePlayableStar } from "./data/stars";
 import { MainMenu } from "./components/MainMenu";
 import { createInitialState, formatGameTime, normalizeCargoManifest, RESOURCE_TYPES, UPGRADES, generateMarketsForStar } from "./utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION } from "./data/ships";
-import { GameState, CelestialBody, SpaceContract } from "./types";
+import { GameState, CelestialBody, SpaceContract, TutorialStepId } from "./types";
 import { getDominantGravitySource, integrateSpacecraft, computeOrbitMetrics, getAbsoluteBodyPosition, getBodyVelocity, buildBodyPositionCache, BodyPosCache, getDockingSpecs, getShipCargoMassKg, getSphereOfInfluence, propagateKeplerianCoast, resolveOrbitReferenceBody } from "./utils/physics";
 import { awardCareerXp, addReputation } from "./utils/progression";
+import { refreshMarkets } from "./utils/economy";
+import { canScanBody, getTotalSurveyDataValue, recordStarDiscovery, scanBody } from "./utils/exploration";
+import { expireAcceptedContracts, refreshContractsForPorts } from "./utils/contracts";
+import {
+  buildUndockState,
+  type DockingClearanceState,
+  type DockingDepartureLock,
+  getDockingParkingRadius,
+  hasClearedDepartureLock,
+  isDepartureLockActive,
+} from "./utils/docking";
+import { applyMiningYield, isMineableBody } from "./utils/mining";
+import {
+  completeTutorialStep,
+  formatTutorialRewardLabel,
+  getFirstIncompleteTutorialStep,
+  TUTORIAL_CONTRACT_ID,
+  TUTORIAL_STEP_TITLES,
+} from "./utils/tutorial";
 import { listCommanderProfiles, loadBestAvailableProfile, loadCommanderProfile, loadLegacySingleSave, saveCommanderProfile, deleteCommanderProfile, clearLegacySingleSave } from "./utils/saveSystem";
 import { createOwnedShipFromCatalog, getShipyardCatalog } from "./utils/shipManagement";
 import { computeApproachGuidance } from "./utils/spaceFlightAutopilot";
 import type { ApproachGuidance } from "./utils/spaceFlightAutopilot";
 import { computeTransferGuidance } from "./utils/transferPlanner";
-import { getPortsForBody, pickPortForBody } from "./utils/worldText";
+import { getPortsForBody, pickDockingPortForBody, pickPortForBody, getAllPortsForBodies } from "./utils/worldText";
 import { createCustomInitialState, migrateLoadedState } from "./app/systems/bootstrap";
 import { THEMES } from "./app/systems/themeSystem";
 import { useCockpitControls } from "./app/systems/useCockpitControls";
@@ -35,7 +57,6 @@ Clock,
 BatteryCharging,
 Coins,
 Cpu,
-MapPin,
 Anchor,
 AlertTriangle,
 RotateCw,
@@ -90,11 +111,60 @@ const getDockingApproachHeading = (
   return Math.atan2(tangentY * orbitSign, tangentX * orbitSign);
 };
 
-const getDockingParkingRadius = (body: CelestialBody) => {
-  const bodyRadius = body.radius ?? 0;
-  if (body.type === "station") return bodyRadius + Math.max(4_000, bodyRadius * 2);
-  if (body.type === "planet") return bodyRadius + 50_000;
-  return bodyRadius + 20_000;
+const getCargoUsedTons = (ship: GameState["ship"]) =>
+  Object.values(ship.cargo).reduce((total, amount) => total + (amount || 0), 0);
+
+const getActiveFlightTutorialCompletion = (
+  state: GameState,
+  ship: GameState["ship"],
+  bodies: CelestialBody[],
+  gameTime: number,
+  throttlePercent: number,
+): TutorialStepId | null => {
+  if (state.tutorialSkipped || state.tutorialCompleted || !state.activeTutorialStep || state.isDocked) return null;
+
+  if (state.activeTutorialStep === "bay-clearance") {
+    const startBody = state.tutorialStartBodyId ? bodies.find((body) => body.id === state.tutorialStartBodyId) : null;
+    if (!startBody) return null;
+    const startPos = getAbsoluteBodyPosition(startBody.id, bodies, gameTime);
+    const distance = Math.hypot(ship.x - startPos.x, ship.y - startPos.y);
+    return distance > getDockingSpecs(startBody).maxDistance * 1.05 ? "bay-clearance" : null;
+  }
+
+  const targetBody = state.tutorialTargetBodyId ? bodies.find((body) => body.id === state.tutorialTargetBodyId) : null;
+  if (!targetBody || state.selectedBodyId !== targetBody.id) return null;
+  const targetPos = getAbsoluteBodyPosition(targetBody.id, bodies, gameTime);
+  const targetVelocity = getBodyVelocity(targetBody.id, bodies, gameTime);
+  const dx = targetPos.x - ship.x;
+  const dy = targetPos.y - ship.y;
+  const distance = Math.hypot(dx, dy);
+  const relSpeed = Math.hypot(ship.vx - targetVelocity.vx, ship.vy - targetVelocity.vy);
+  const targetBearing = Math.atan2(dy, dx);
+  const targetAlignment = Math.cos(angleDelta(targetBearing, ship.heading));
+  const targetDockingSpecs = getDockingSpecs(targetBody);
+
+  if (state.activeTutorialStep === "hold-vector") {
+    return Math.abs(throttlePercent) >= 5 && targetAlignment > 0.5 ? "hold-vector" : null;
+  }
+
+  if (state.activeTutorialStep === "match-speed") {
+    const approachDistance = Math.max(targetDockingSpecs.maxDistance * 8, (targetBody.radius ?? 0) + 5_000_000);
+    const approachSpeed = Math.max(targetDockingSpecs.maxSpeed * 1.25, 450);
+    return distance <= approachDistance && relSpeed <= approachSpeed ? "match-speed" : null;
+  }
+
+  return null;
+};
+
+const formatTutorialProgressLog = (
+  stepId: TutorialStepId,
+  nextStep: TutorialStepId | null,
+  reward: ReturnType<typeof completeTutorialStep>["reward"],
+) => {
+  const rewardLabel = formatTutorialRewardLabel(reward);
+  const rewardText = rewardLabel ? ` Awarded ${rewardLabel}.` : "";
+  const nextText = nextStep ? ` Next: ${TUTORIAL_STEP_TITLES[nextStep]}.` : " Flight training complete.";
+  return `Flight Training: ${TUTORIAL_STEP_TITLES[stepId]} certified.${rewardText}${nextText}`;
 };
 
 export default function App() {
@@ -116,15 +186,16 @@ const [profileSummaries, setProfileSummaries] = useState(() => listCommanderProf
 const [isInMainMenu, setIsInMainMenu] = useState<boolean>(true);
 
 const [activeTab, setActiveTab] = useState<"market" | "upgrades" | "contracts">("market");
-const [mapMode, setMapMode] = useState<"star" | "ship" | "target">("star");
+const [requestedManagementTab, setRequestedManagementTab] = useState<"dock-main" | "market" | "upgrades" | "contracts" | null>(null);
+const [mapMode, setMapMode] = useState<"star" | "ship" | "target" | "galaxy">("star");
 const [isThrusting, setIsThrusting] = useState<boolean>(false);
+const [showDockingSequence, setShowDockingSequence] = useState(false);
 // Written every tick by the autopilot; the HUD reads it via the 10 Hz snapshot below.
 const approachGuidanceRef = useRef<ApproachGuidance | null>(null);
 // Effective warp actually applied this tick and why it was limited, for the HUD readout.
 const warpStatusRef = useRef<{ effective: number; reason: "dock-hold" | "ap-guard" | "proximity" | null }>({ effective: 1, reason: null });
 const fpsCounterRef = useRef({ frames: 0, startedAt: performance.now(), value: 0 });
-const [dockingClearance, setDockingClearance] = useState<{ bodyId: string; portId: string; holdStartedAt: number | null } | null>(null);
-const [selectedWarpWarp, setSelectedWarpWarp] = useState<boolean>(false);
+const [dockingClearance, setDockingClearance] = useState<DockingClearanceState | null>(null);
 
 // Customizable Cockpit UI Theme State
 const [uiTheme, setUiTheme] = useState<"amber" | "blue" | "green" | "red">(() => {
@@ -166,6 +237,23 @@ const autopilotRef = useRef(autopilotMode);
 autopilotRef.current = autopilotMode;
 const dockingClearanceRef = useRef(dockingClearance);
 dockingClearanceRef.current = dockingClearance;
+const departureLockRef = useRef<DockingDepartureLock | null>(null);
+const applyDockingClearance = useCallback((next: DockingClearanceState | null) => {
+  dockingClearanceRef.current = next;
+  setDockingClearance(next);
+}, []);
+useEffect(() => {
+if (!gameState.isDocked || dockingClearance === null) return;
+applyDockingClearance(null);
+}, [applyDockingClearance, gameState.isDocked, dockingClearance]);
+useEffect(() => {
+if (!gameState.isDocked) return;
+departureLockRef.current = null;
+}, [gameState.isDocked]);
+useEffect(() => {
+if (gameState.isDocked) return;
+setShowDockingSequence(false);
+}, [gameState.isDocked]);
 const pressedKeysRef = useRef({ thrust: false, steerLeft: false, steerRight: false, circMode: false, matchMode: false });
 
 // The DOM cockpit re-renders from this 10 Hz snapshot instead of every animation frame;
@@ -226,8 +314,22 @@ systemBodiesRef.current = systemBodies;
 
 // Selected object info — HUD-facing orbital math runs on the 10 Hz snapshot, not per frame.
 const hudState = hudSnapshot.state;
-const shipyardCatalog = getShipyardCatalog();
-const selectedPortName = gameState.dockedPortId || "current port";
+const dockedBody = useMemo(
+  () => (gameState.dockedBodyId ? systemBodies.find((body) => body.id === gameState.dockedBodyId) || null : null),
+  [gameState.dockedBodyId, systemBodies],
+);
+const dockedPortRecord = useMemo(() => {
+  if (!gameState.dockedBodyId || !gameState.dockedPortId) return null;
+  return dockedBody ? getPortsForBody(dockedBody).find((port) => port.id === gameState.dockedPortId) || null : null;
+}, [dockedBody, gameState.dockedBodyId, gameState.dockedPortId]);
+const dockedFactionReputation = dockedPortRecord ? gameState.playerProfile.reputation[dockedPortRecord.faction] || 0 : 0;
+const galacticMapUnlocked = gameState.ship.warpCapacity && gameState.ship.installedUpgradeIds.includes("galactic_chart");
+const shipyardCatalog = getShipyardCatalog().filter((entry) => (
+  dockedPortRecord && dockedPortRecord.services.includes("shipyard")
+    ? dockedFactionReputation >= 8 || entry.baseCost <= (dockedFactionReputation >= 4 ? 20000 : 10000)
+    : true
+));
+const selectedPortName = dockedPortRecord?.name || gameState.dockedPortId || "current port";
 const dockedPortInventory = gameState.ownedShips.filter((entry) => entry.homePortId === gameState.dockedPortId);
 const hudDerived = useMemo(() => {
   const selectedBody = systemBodies.find((b) => b.id === hudState.selectedBodyId) || null;
@@ -287,6 +389,17 @@ const {
   domGravity,
   relativeOrbit,
 } = hudDerived;
+const departureLockedAtSelectedBody = !!selectedBody
+  && isDepartureLockActive(departureLockRef.current, selectedBody.id, hudState.ship, systemBodies, hudState.gameTime);
+const canScanSelectedBody = canScanBody(gameState.ship, selectedBody, systemBodies, gameState.gameTime);
+const selectedBodyScanned = !!selectedBody && gameState.scannedBodyIds.includes(selectedBody.id);
+const surveyDataValue = getTotalSurveyDataValue(gameState.surveyDataByBody);
+
+useEffect(() => {
+  if (!galacticMapUnlocked && mapMode === "galaxy") {
+    setMapMode("star");
+  }
+}, [galacticMapUnlocked, mapMode]);
 
 const activeTheme = THEMES[uiTheme];
 
@@ -334,8 +447,11 @@ const { GALAXY_STARS, getOrCreatePlayableStar } = await import("./data/stars");
 if (arrivalStar) {
 const dest = getOrCreatePlayableStar(arrivalStar.id);
 const destinationMarkets = generateMarketsForStar(arrivalStar.id);
+const destinationPorts = getAllPortsForBodies(dest.planets).filter((port) => port.services.includes("contracts"));
 setAutopilotMode("none");
-commitGameState((prev) => ({
+commitGameState((prev) => {
+const discovery = recordStarDiscovery(prev.playerProfile, prev.discoveredStarIds, arrivalStar.id);
+return ({
 ...prev,
 activeStarId: arrivalStar.id,
 flightMode: "local-system",
@@ -346,6 +462,8 @@ isDocked: false,
 dockedBodyId: null,
 gameTime: current.gameTime + gameDt,
 markets: { ...prev.markets, ...destinationMarkets },
+contracts: refreshContractsForPorts(prev.contracts, destinationPorts, current.gameTime + gameDt, discovery.playerProfile.reputation),
+contractsLastRefreshDay: Math.floor((current.gameTime + gameDt) / 86400),
 ship: {
 ...prev.ship,
 x: SYSTEM_ESCAPE_RADIUS_METERS * 0.8,
@@ -354,12 +472,13 @@ vx: 0,
 vy: 18000,
 throttlePercent: 0,
 },
-playerProfile: awardCareerXp({
-...prev.playerProfile,
-totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt,
-stats: { ...prev.playerProfile.stats, starsVisited: prev.playerProfile.stats.starsVisited + 1 },
-}, "exploration", 250),
-}));
+playerProfile: {
+...discovery.playerProfile,
+totalPlayTimeSec: discovery.playerProfile.totalPlayTimeSec + realDt,
+},
+discoveredStarIds: discovery.discoveredStarIds,
+});
+});
 addConsoleLog(`Navigation: Entered ${arrivalStar.name} local frame. System bodies resolved from star database.`, "success");
 } else {
 commitGameState((prev) => ({
@@ -823,12 +942,18 @@ ship: { ...updatedShip, throttlePercent: 0 },
       return;
     }
 
+    if (!current.isDocked && departureLockRef.current && hasClearedDepartureLock(departureLockRef.current, updatedShip, systemBodiesRef.current, current.gameTime)) {
+      departureLockRef.current = null;
+    }
+
     const activeClearance = dockingClearanceRef.current;
     if (activeClearance && !current.isDocked) {
       const dockBody = systemBodiesRef.current.find((body) => body.id === activeClearance.bodyId);
-      const dockPort = dockBody ? pickPortForBody(dockBody, "markets") || pickPortForBody(dockBody) : null;
+      const dockPort = dockBody ? pickDockingPortForBody(dockBody) : null;
       if (!dockBody || !dockPort || dockPort.id !== activeClearance.portId) {
-        setDockingClearance(null);
+        applyDockingClearance(null);
+      } else if (isDepartureLockActive(departureLockRef.current, dockBody.id, updatedShip, systemBodiesRef.current, current.gameTime)) {
+        applyDockingClearance(null);
       } else {
         const dockPos = getAbsoluteBodyPosition(dockBody.id, systemBodiesRef.current, current.gameTime);
         const dockVelocity = getBodyVelocity(dockBody.id, systemBodiesRef.current, current.gameTime);
@@ -841,11 +966,11 @@ ship: { ...updatedShip, throttlePercent: 0 },
 
         if (!insideCaptureLeash) {
           if (activeClearance.holdStartedAt !== null) {
-            setDockingClearance(null);
+            applyDockingClearance(null);
             addConsoleLog(`Docking control: capture aborted at ${dockBody.stationName || dockBody.name}. Re-enter the docking approach zone.`, "warning");
           }
         } else if (activeClearance.holdStartedAt === null) {
-          setDockingClearance({ ...activeClearance, holdStartedAt: current.gameTime });
+          applyDockingClearance({ ...activeClearance, holdStartedAt: current.gameTime });
         } else {
           const parkingRadius = getDockingParkingRadius(dockBody);
           const offsetX = updatedShip.x - dockPos.x;
@@ -873,30 +998,44 @@ ship: { ...updatedShip, throttlePercent: 0 },
           if (current.gameTime - activeClearance.holdStartedAt >= DOCKING_HOLD_SECONDS) {
           setAutopilotMode("none");
           setIsThrusting(false);
-          setDockingClearance(null);
-          commitGameState((prev) => ({
-            ...prev,
-            gameTime: current.gameTime + gameDt,
-            isDocked: true,
-            dockedBodyId: dockBody.id,
-            dockedPortId: dockPort.id,
-            miningTargetId: null,
-            playerProfile: {
-              ...prev.playerProfile,
-              totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt,
-              stats: { ...prev.playerProfile.stats, dockingCount: prev.playerProfile.stats.dockingCount + 1 },
-            },
-            ship: {
-              ...updatedShip,
-              x: parkingX,
-              y: parkingY,
-              vx: dockVelocity.vx,
-              vy: dockVelocity.vy,
-              throttlePercent: 0,
-            },
-          }));
+          applyDockingClearance(null);
+          let dockingTutorialCompletion: ReturnType<typeof completeTutorialStep> | null = null;
+          commitGameState((prev) => {
+            const nextState = {
+              ...prev,
+              gameTime: current.gameTime + gameDt,
+              isDocked: true,
+              dockedBodyId: dockBody.id,
+              dockedPortId: dockPort.id,
+              miningTargetId: null,
+              playerProfile: {
+                ...prev.playerProfile,
+                totalPlayTimeSec: prev.playerProfile.totalPlayTimeSec + realDt,
+                stats: { ...prev.playerProfile.stats, dockingCount: prev.playerProfile.stats.dockingCount + 1 },
+              },
+              ship: {
+                ...updatedShip,
+                x: parkingX,
+                y: parkingY,
+                vx: dockVelocity.vx,
+                vy: dockVelocity.vy,
+                throttlePercent: 0,
+              },
+            };
+
+            if (dockBody.id === prev.tutorialTargetBodyId) {
+              dockingTutorialCompletion = completeTutorialStep(nextState, "docking-practice");
+              return dockingTutorialCompletion.state;
+            }
+
+            return nextState;
+          });
           addConsoleLog(`âœ“ Docking clamps engaged at ${dockBody.stationName || dockBody.name}. Trade networks unlocked.`, "success");
-          setActiveTab("market");
+          setShowDockingSequence(true);
+          setRequestedManagementTab("dock-main");
+          if (dockingTutorialCompletion?.completed) {
+            addConsoleLog(formatTutorialProgressLog("docking-practice", dockingTutorialCompletion.nextStep, dockingTutorialCompletion.reward), "success");
+          }
           frameId = requestAnimationFrame(tick);
           return;
           }
@@ -911,61 +1050,36 @@ ship: { ...updatedShip, throttlePercent: 0 },
     let playerProfileVal = current.playerProfile;
 
     if (current.miningTargetId && current.miningTargetId === current.selectedBodyId) {
-      // Mine continuous tick
       const mineNode = systemBodiesRef.current.find((b) => b.id === current.miningTargetId);
-if (mineNode) {
-const mDx = updatedShip.x - getAbsoluteBodyPosition(mineNode.id, systemBodiesRef.current, current.gameTime).x;
-const mDy = updatedShip.y - getAbsoluteBodyPosition(mineNode.id, systemBodiesRef.current, current.gameTime).y;
-const mDist = Math.hypot(mDx, mDy);
+      if (mineNode) {
+        const minePos = getAbsoluteBodyPosition(mineNode.id, systemBodiesRef.current, current.gameTime);
+        const mDist = Math.hypot(updatedShip.x - minePos.x, updatedShip.y - minePos.y);
 
-if (mDist < 5e5) { // under 500km bounds
-// Calculate current cargo mass
-let currentCargoMass = 0;
-Object.keys(updatedShip.cargo).forEach((k) => currentCargoMass += updatedShip.cargo[k] || 0);
+        if (mDist < 5e5) {
+          const harvestRate = updatedShip.miningPower * 0.0003 * gameDt;
+          const mined = applyMiningYield(updatedShip, mineNode, harvestRate);
 
-if (currentCargoMass < updatedShip.cargoCapacity) {
-const harvestRate = updatedShip.miningPower * 0.0003 * gameDt; // extraction
+          if (mined.minedTons > 0) {
+            updatedShip.cargo = mined.cargo;
+            playerProfileVal = awardCareerXp({
+              ...playerProfileVal,
+              stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined + mined.minedTons },
+            }, "mining", Math.max(1, Math.round(mined.minedTons * 20)));
 
-const updatedCargo = { ...updatedShip.cargo };
-// Select commodity type (ice on moons/asteroids, metal ore mostly)
-const resType = mineNode.name.toLowerCase().includes("luna") || mineNode.name.toLowerCase().includes("ice") ? "water" : "ore";
-updatedCargo[resType] = (updatedCargo[resType] || 0) + harvestRate;
-
-// Constraint check
-let finalCargoMass = 0;
-Object.keys(updatedCargo).forEach((k) => finalCargoMass += updatedCargo[k] || 0);
-
-if (finalCargoMass >= updatedShip.cargoCapacity) {
-// Crop excess
-const overage = finalCargoMass - updatedShip.cargoCapacity;
-const minedTons = Math.max(0, harvestRate - overage);
-updatedCargo[resType] = Math.max(0, updatedCargo[resType] - overage);
-updatedShip.cargo = updatedCargo;
-if (minedTons > 0) {
-playerProfileVal = awardCareerXp({
-...playerProfileVal,
-stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined + minedTons },
-}, "mining", Math.max(1, Math.round(minedTons * 20)));
-}
-commitGameState((g) => ({ ...g, miningTargetId: null }));
-addConsoleLog("Drill Computer: Cargo inventory reached max tonnage capacity. Drills disengaged.", "warning");
-} else {
-updatedShip.cargo = updatedCargo;
-playerProfileVal = awardCareerXp({
-...playerProfileVal,
-stats: { ...playerProfileVal.stats, tonsMined: playerProfileVal.stats.tonsMined + harvestRate },
-}, "mining", Math.max(1, Math.round(harvestRate * 20)));
-}
-} else {
-commitGameState((g) => ({ ...g, miningTargetId: null }));
-addConsoleLog("Drill Computer: Cargo inventory is completely full.", "warning");
-}
-} else {
-commitGameState((g) => ({ ...g, miningTargetId: null }));
-addConsoleLog("Drill Computer: Signal lost. Mining lasers disengaged (out of range).", "warning");
-}
-}
-}
+            if (mined.minedTons < harvestRate) {
+              commitGameState((g) => ({ ...g, miningTargetId: null }));
+              addConsoleLog("Drill Computer: Cargo inventory reached max tonnage capacity. Drills disengaged.", "warning");
+            }
+          } else {
+            commitGameState((g) => ({ ...g, miningTargetId: null }));
+            addConsoleLog("Drill Computer: Cargo inventory is completely full.", "warning");
+          }
+        } else {
+          commitGameState((g) => ({ ...g, miningTargetId: null }));
+          addConsoleLog("Drill Computer: Signal lost. Mining lasers disengaged (out of range).", "warning");
+        }
+      }
+    }
 
 // --- 4. Celestial Frame Crash and Friction Safety boundary ---
 // Check proximity with every planet/moon/star. If inside body radius, ship crashes!
@@ -1049,13 +1163,74 @@ creditsVal = Math.max(500, creditsVal - 1000); // crash penalty
 
 setIsThrusting(false);
 setAutopilotMode("none");
+departureLockRef.current = null;
 
 addConsoleLog(`CRUNCH! Spaceship breached boundary layer around ${crashedBodyName}. Rescue crews refitted the hull at ${rescue?.port.name || activeStarRef.current.name} for 1,000 cr.`, "warning");
 }
 
 // Refresh dynamic markets slowly over time to simulate a trade economy (every 1 game day)
-// Standard static/semi-periodic random increments
 const updatedTimeValue = current.gameTime + gameDt;
+const currentDay = Math.floor(updatedTimeValue / 86400);
+const expiredContracts = expireAcceptedContracts(current.contracts, updatedTimeValue);
+let nextContracts = expiredContracts.contracts;
+let nextContractsRefreshDay = current.contractsLastRefreshDay;
+let nextMarketsRefreshDay = current.marketsLastUpdatedDay;
+let tutorialSkippedVal = current.tutorialSkipped;
+let tutorialCompletedVal = current.tutorialCompleted;
+let activeTutorialStepVal = current.activeTutorialStep;
+let completedTrainingMissionIdsVal = current.completedTrainingMissionIds;
+
+for (const failedContract of expiredContracts.failed) {
+  playerProfileVal = addReputation(playerProfileVal, failedContract.issuerFaction, -3);
+  if (failedContract.type === "passenger") {
+    updatedShip.passengerCount = Math.max(0, updatedShip.passengerCount - (failedContract.passengerCount || 0));
+  }
+  logsList = [{
+    timestamp: formatGameTime(updatedTimeValue),
+    text: `Contract expired: ${failedContract.title}. ${failedContract.issuerFaction || failedContract.issuerName || "Local broker"} reputation reduced.`,
+    type: "warning",
+  }, ...logsList].slice(0, 40);
+}
+
+if (currentDay > current.marketsLastUpdatedDay) {
+  appendMarkets = refreshMarkets(current.markets, currentDay - current.marketsLastUpdatedDay);
+  nextMarketsRefreshDay = currentDay;
+}
+
+if (currentDay > current.contractsLastRefreshDay || expiredContracts.failed.length > 0) {
+  const contractPorts = getAllPortsForBodies(systemBodiesRef.current).filter((port) => port.services.includes("contracts"));
+  nextContracts = refreshContractsForPorts(nextContracts, contractPorts, updatedTimeValue, playerProfileVal.reputation);
+  nextContractsRefreshDay = currentDay;
+}
+
+const flightTutorialStep = !crashDetected
+  ? getActiveFlightTutorialCompletion(current, updatedShip, systemBodiesRef.current, updatedTimeValue, actualThrottlePercent)
+  : null;
+if (flightTutorialStep) {
+  const completion = completeTutorialStep({
+    ...current,
+    gameTime: updatedTimeValue,
+    playerCredits: creditsVal,
+    playerProfile: playerProfileVal,
+    ship: updatedShip,
+    contracts: nextContracts,
+    markets: appendMarkets,
+  }, flightTutorialStep);
+
+  if (completion.completed) {
+    creditsVal = completion.state.playerCredits;
+    updatedShip = completion.state.ship;
+    tutorialSkippedVal = completion.state.tutorialSkipped;
+    tutorialCompletedVal = completion.state.tutorialCompleted;
+    activeTutorialStepVal = completion.state.activeTutorialStep;
+    completedTrainingMissionIdsVal = completion.state.completedTrainingMissionIds;
+    logsList = [{
+      timestamp: formatGameTime(updatedTimeValue),
+      text: formatTutorialProgressLog(flightTutorialStep, completion.nextStep, completion.reward),
+      type: "success",
+    }, ...logsList].slice(0, 40);
+  }
+}
 
 commitGameState((prev) => ({
 ...prev,
@@ -1063,6 +1238,15 @@ gameTime: updatedTimeValue,
 ship: updatedShip,
 playerCredits: creditsVal,
 playerProfile: { ...playerProfileVal, totalPlayTimeSec: playerProfileVal.totalPlayTimeSec + realDt },
+markets: appendMarkets,
+marketsLastUpdatedDay: nextMarketsRefreshDay,
+contracts: nextContracts,
+contractsLastRefreshDay: nextContractsRefreshDay,
+ tutorialSkipped: tutorialSkippedVal,
+ tutorialCompleted: tutorialCompletedVal,
+ activeTutorialStep: activeTutorialStepVal,
+ completedTrainingMissionIds: completedTrainingMissionIdsVal,
+logs: logsList,
 ...(crashDetected ? {
 selectedBodyId: crashDockBodyId,
 miningTargetId: null,
@@ -1195,6 +1379,14 @@ addConsoleLog(`Disposed ${amount}t of ${resMarket.name} to refinery bay. Credite
 // Docking triggers
 const handleDockActivate = () => {
 if (!selectedBody || selectedBodyPorts.length === 0) return;
+if (isDepartureLockActive(departureLockRef.current, selectedBody.id, stateRef.current.ship, systemBodiesRef.current, stateRef.current.gameTime)) {
+const releaseKm = Math.round((departureLockRef.current?.releaseDistance || 0) / 1000);
+addConsoleLog(
+`Docking denied by ${selectedBody.stationName || selectedBody.name}: departure corridor still active. Clear beyond ${releaseKm.toLocaleString()} km before requesting fresh clearance.`,
+"warning"
+);
+return;
+}
 if (!canDockAtSelectedBody) {
 const activeSpecs = getDockingSpecs(selectedBody);
 const maxAltKm = Math.round((activeSpecs.maxDistance - selectedBody.radius) / 1000);
@@ -1205,22 +1397,24 @@ addConsoleLog(
 return;
 }
 
-const dockingPort = pickPortForBody(selectedBody, "markets") || pickPortForBody(selectedBody);
+const dockingPort = pickDockingPortForBody(selectedBody);
 if (!dockingPort) {
 addConsoleLog(`Docking denied by ${selectedBody.stationName || selectedBody.name}: no active port record found.`, "warning");
 return;
 }
 
-setDockingClearance({ bodyId: selectedBody.id, portId: dockingPort.id, holdStartedAt: null });
+applyDockingClearance({ bodyId: selectedBody.id, portId: dockingPort.id, holdStartedAt: null });
 addConsoleLog(`Docking control: clearance granted by ${selectedBody.stationName || selectedBody.name}. Station capture will match local frame in ${DOCKING_HOLD_SECONDS}s.`, "info");
 };
 
 const handleUndockActivate = () => {
 setAutopilotMode("none");
 setIsThrusting(false);
+applyDockingClearance(null);
 commitGameState((prev) => {
 const dockBody = systemBodiesRef.current.find((body) => body.id === prev.dockedBodyId);
 if (!dockBody) {
+departureLockRef.current = null;
 return {
 ...prev,
 isDocked: false,
@@ -1230,34 +1424,15 @@ ship: { ...prev.ship, throttlePercent: 0 },
 };
 }
 
-const bodyPos = getAbsoluteBodyPosition(dockBody.id, systemBodiesRef.current, prev.gameTime);
-const bodyVelocity = getBodyVelocity(dockBody.id, systemBodiesRef.current, prev.gameTime);
-const offsetX = prev.ship.x - bodyPos.x;
-const offsetY = prev.ship.y - bodyPos.y;
-const offsetLength = Math.hypot(offsetX, offsetY);
-const ux = offsetLength > 1 ? offsetX / offsetLength : 1;
-const uy = offsetLength > 1 ? offsetY / offsetLength : 0;
-const parkingRadius = dockBody.type === "station"
-? (dockBody.radius ?? 0) + 25_000
-: (dockBody.radius ?? 0) + Math.max(1_500_000, (dockBody.radius ?? 0) * 0.08);
-const targetMass = dockBody.type === "star" ? (dockBody.mass ?? 0) * 1.989e30 : (dockBody.mass ?? 0);
-const circularSpeed = targetMass > 0 ? Math.sqrt((6.6743e-11 * targetMass) / Math.max(1, parkingRadius)) : 0;
-const tangentX = -uy;
-const tangentY = ux;
+const undocked = buildUndockState(prev.ship, dockBody, systemBodiesRef.current, prev.gameTime);
+departureLockRef.current = undocked.departureLock;
 
 return {
 ...prev,
 isDocked: false,
 dockedBodyId: null,
 dockedPortId: null,
-ship: {
-...prev.ship,
-x: bodyPos.x + ux * parkingRadius,
-y: bodyPos.y + uy * parkingRadius,
-vx: bodyVelocity.vx + tangentX * circularSpeed,
-vy: bodyVelocity.vy + tangentY * circularSpeed,
-throttlePercent: 0,
-},
+ship: undocked.ship,
 };
 });
 addConsoleLog(`âœ— Spaceport clamps released. Attitude thrusters ready. Space pressure sealed. Safe flight, Commander.`, "info");
@@ -1265,7 +1440,10 @@ addConsoleLog(`âœ— Spaceport clamps released. Attitude thrusters ready. Spac
 
 // Asteroid Drilling toggle trigger
 const handleToggleMining = () => {
-if (!selectedBody) return;
+if (!selectedBody || !isMineableBody(selectedBody)) {
+addConsoleLog("Drill Computer: selected target has no mineable strata signature.", "warning");
+return;
+}
 if (gameState.miningTargetId === selectedBody.id) {
 commitGameState((prev) => ({ ...prev, miningTargetId: null }));
 addConsoleLog("Drill Computer: Thermal laser miners offline.", "info");
@@ -1275,22 +1453,102 @@ addConsoleLog(`Drill Computer: Focused thermal drills pointing at ${selectedBody
 }
 };
 
+const handleScanSelectedBody = () => {
+if (!selectedBody) return;
+if (selectedBodyScanned) {
+addConsoleLog(`Survey Computer: ${selectedBody.name} already resolved in the cartographic database.`, "info");
+return;
+}
+if (!canScanSelectedBody) {
+addConsoleLog("Survey Computer: target outside scanner envelope.", "warning");
+return;
+}
+commitGameState((prev) => {
+const result = scanBody(prev.playerProfile, prev.scannedBodyIds, prev.surveyDataByBody, selectedBody);
+return {
+...prev,
+playerProfile: result.playerProfile,
+scannedBodyIds: result.scannedBodyIds,
+surveyDataByBody: result.surveyDataByBody,
+};
+});
+addConsoleLog(`Survey Computer: ${selectedBody.name} resolved and cartographic data archived for later sale.`, "success");
+};
+
+const handleSellSurveyData = () => {
+if (!gameState.isDocked || !gameState.dockedPortId) return;
+if (surveyDataValue <= 0) {
+addConsoleLog("Cartography Desk: no unsold survey packets in ship memory.", "info");
+return;
+}
+commitGameState((prev) => ({
+...prev,
+playerCredits: prev.playerCredits + getTotalSurveyDataValue(prev.surveyDataByBody),
+surveyDataByBody: {},
+}));
+addConsoleLog(`Cartography Desk: sold survey telemetry package for ${surveyDataValue.toLocaleString()}¢.`, "success");
+};
+
 // Accepting Space commission contracts
 const handleAcceptContract = (id: string) => {
 const target = gameState.contracts.find((c) => c.id === id);
-commitGameState((prev) => ({
+if (!target || target.accepted || target.completed || target.failed) return;
+if (target.deadline && target.deadline <= gameState.gameTime) {
+addConsoleLog(`Operations: ${target.title} is already past its filing deadline.`, "warning");
+return;
+}
+if (target.issuerPortId && gameState.dockedPortId !== target.issuerPortId) {
+addConsoleLog("Operations: dock at the issuing port to sign this contract.", "warning");
+return;
+}
+if (target.type === "passenger") {
+  const freeBerths = Math.max(0, (gameState.ship.passengerCapacity || 0) - (gameState.ship.passengerCount || 0));
+  if (freeBerths < (target.passengerCount || 0)) {
+    addConsoleLog("Operations: insufficient passenger berths for this manifest.", "warning");
+    return;
+  }
+}
+const tutorialDeliveryAmount = target.id === TUTORIAL_CONTRACT_ID && target.type === "delivery" ? target.amount || 0 : 0;
+if (tutorialDeliveryAmount > 0) {
+  const cargoLimit = gameState.ship.cargoCapacityTons ?? gameState.ship.cargoCapacity;
+  if (getCargoUsedTons(gameState.ship) + tutorialDeliveryAmount > cargoLimit) {
+    addConsoleLog("Training Desk: clear cargo space before loading the sealed training packet.", "warning");
+    return;
+  }
+}
+commitGameState((prev) => {
+let nextShip = prev.ship;
+if (target.type === "passenger") {
+  nextShip = { ...nextShip, passengerCount: nextShip.passengerCount + (target.passengerCount || 0) };
+}
+if (tutorialDeliveryAmount > 0 && target.cargoType) {
+  nextShip = {
+    ...nextShip,
+    cargo: {
+      ...nextShip.cargo,
+      [target.cargoType]: (nextShip.cargo[target.cargoType] || 0) + tutorialDeliveryAmount,
+    },
+  };
+}
+return {
 ...prev,
-ship: target?.type === "passenger" ? { ...prev.ship, passengerCount: prev.ship.passengerCount + (target.passengerCount || 0) } : prev.ship,
-contracts: prev.contracts.map((c) => (c.id === id ? { ...c, accepted: true } : c)),
-}));
-addConsoleLog(`operations: Commission underwritten: "${target?.title}". Check inventory grids or orbit points to satisfy objective criteria.`, "info");
+ship: nextShip,
+contracts: prev.contracts.map((c) => (c.id === id ? { ...c, accepted: true, failed: false } : c)),
+};
+});
+addConsoleLog(`Operations: Commission underwritten: "${target.title}". Check inventory grids or orbit points to satisfy objective criteria.`, "info");
 };
 
 // Delivering and claiming mission bounties
 const handleCompleteContract = (id: string) => {
 const contract = gameState.contracts.find((c) => c.id === id);
-if (!contract || !contract.accepted || contract.completed) return;
+if (!contract || !contract.accepted || contract.completed || contract.failed) return;
+if (contract.deadline && contract.deadline <= gameState.gameTime) {
+addConsoleLog(`Operations: ${contract.title} has already expired.`, "warning");
+return;
+}
 
+let firstRunTutorialCompletion: ReturnType<typeof completeTutorialStep> | null = null;
 commitGameState((prev) => {
 const copyShipCargo = { ...prev.ship.cargo };
 if (contract.type === "delivery" && contract.cargoType) {
@@ -1300,9 +1558,9 @@ copyShipCargo[contract.cargoType] = Math.max(0, (copyShipCargo[contract.cargoTyp
 let nextProfile = awardCareerXp({
 ...prev.playerProfile,
 stats: { ...prev.playerProfile.stats, contractsCompleted: prev.playerProfile.stats.contractsCompleted + 1 },
-}, contract.type === "passenger" ? "operations" : contract.type === "delivery" ? "trade" : "operations", Math.max(25, Math.round(contract.reward / 120)));
+}, contract.type === "delivery" ? "trade" : "operations", Math.max(25, Math.round(contract.reward / 120)));
 nextProfile = addReputation(nextProfile, contract.issuerFaction, 2);
-return {
+const nextState = {
 ...prev,
 playerCredits: prev.playerCredits + contract.reward,
 ship: {
@@ -1313,9 +1571,59 @@ passengerCount: contract.type === "passenger" ? Math.max(0, prev.ship.passengerC
 contracts: prev.contracts.map((c) => (c.id === id ? { ...c, completed: true } : c)),
 playerProfile: nextProfile,
 };
+
+if (contract.id === TUTORIAL_CONTRACT_ID) {
+firstRunTutorialCompletion = completeTutorialStep(nextState, "first-paid-run");
+return firstRunTutorialCompletion.state;
+}
+
+return nextState;
 });
 
-addConsoleLog(`ðŸ† MISSION ACCOMPLISHED: Delivered payloads or matched telemetry specifications for "${contract.title}". Credited highly valued +${contract.reward}Â¢ reward package!`, "success");
+addConsoleLog(`MISSION ACCOMPLISHED: Delivered payloads or matched telemetry specifications for "${contract.title}". Credited +${contract.reward}¢ reward package.`, "success");
+if (firstRunTutorialCompletion?.completed) {
+addConsoleLog(formatTutorialProgressLog("first-paid-run", firstRunTutorialCompletion.nextStep, firstRunTutorialCompletion.reward), "success");
+}
+};
+
+const handleSelectTutorialBody = (bodyId: string) => {
+if (!systemBodiesRef.current.some((body) => body.id === bodyId)) return;
+commitGameState((prev) => ({ ...prev, selectedBodyId: bodyId }));
+setMapMode("target");
+};
+
+const handleOpenContracts = () => {
+setActiveTab("contracts");
+if (stateRef.current.isDocked) {
+setRequestedManagementTab("contracts");
+} else {
+addConsoleLog("Operations: contract board access requires docking at a station or port.", "info");
+}
+};
+
+const handleSkipTutorial = () => {
+commitGameState((prev) => ({
+...prev,
+tutorialSkipped: true,
+activeTutorialStep: null,
+}));
+addConsoleLog("Flight Training: guidance skipped. Resume it later from the contract board.", "info");
+};
+
+const handleResumeTutorial = () => {
+let resumedStep: TutorialStepId | null = null;
+commitGameState((prev) => {
+if (prev.tutorialCompleted) return prev;
+resumedStep = prev.activeTutorialStep || getFirstIncompleteTutorialStep(prev.completedTrainingMissionIds) || "bay-clearance";
+return {
+...prev,
+tutorialSkipped: false,
+activeTutorialStep: resumedStep,
+};
+});
+if (resumedStep) {
+addConsoleLog(`Flight Training: guidance resumed at ${TUTORIAL_STEP_TITLES[resumedStep]}.`, "info");
+}
 };
 
 // Engineering Upgrades purchase trigger
@@ -1380,7 +1688,7 @@ addConsoleLog(`Shipyard: active command transferred to ${target.name}.`, "succes
 const handleWarpToStar = async (starId: string) => {
 const { getOrCreatePlayableStar } = await import("./data/stars");
 const dest = getOrCreatePlayableStar(starId);
-if (!dest || !gameState.ship.warpCapacity) return;
+if (!dest || !gameState.ship.warpCapacity || !galacticMapUnlocked) return;
 
 // Remove 1 Helium-3 from fuel hold
 const updatedCargo = { ...gameState.ship.cargo };
@@ -1395,8 +1703,11 @@ updatedCargo["he3"] = Math.max(0, currentHe3 - 1);
 // Set spaceship inside high orbital range of new star destination
 const highOrbitPos = 0.5 * AU;
 const destinationMarkets = generateMarketsForStar(starId);
+const destinationPorts = getAllPortsForBodies(dest.planets).filter((port) => port.services.includes("contracts"));
 
-commitGameState((prev) => ({
+commitGameState((prev) => {
+const discovery = recordStarDiscovery(prev.playerProfile, prev.discoveredStarIds, starId);
+return ({
 ...prev,
 activeStarId: starId,
 selectedBodyId: dest.planets[0]?.id || null, // lock first planet of new star
@@ -1407,10 +1718,10 @@ markets: {
 ...prev.markets,
 ...destinationMarkets,
 },
-playerProfile: awardCareerXp({
-...prev.playerProfile,
-stats: { ...prev.playerProfile.stats, starsVisited: prev.playerProfile.stats.starsVisited + 1 },
-}, "exploration", 250),
+contracts: refreshContractsForPorts(prev.contracts, destinationPorts, prev.gameTime, discovery.playerProfile.reputation),
+contractsLastRefreshDay: Math.floor(prev.gameTime / 86400),
+playerProfile: discovery.playerProfile,
+discoveredStarIds: discovery.discoveredStarIds,
 ship: {
 ...prev.ship,
 x: highOrbitPos,
@@ -1419,7 +1730,8 @@ vx: 0,
 vy: 18000, // safe initial speed
 cargo: updatedCargo,
 },
-}));
+});
+});
 
 addConsoleLog(`ðŸŒŒ COGNITIVE WAVEFOLD INITIATED: Spacetime folded relative to ${dest.name} coordinates. Quantum engine depleted 1,000kg of Helium-3. Standard space entry captures successful.`, "success");
 };
@@ -1440,7 +1752,17 @@ stateRef,
 });
 pressedKeysRef.current = pressedKeys;
 
-const mapView = (
+const mapView = mapMode === "galaxy" ? (
+  <GalacticMap
+    ship={hudState.ship}
+    activeStarId={hudState.activeStarId}
+    interstellar={hudState.interstellar}
+    onWarpToStar={handleWarpToStar}
+    logs={hudState.logs.map((entry) => `${entry.timestamp} ${entry.text}`)}
+    credits={hudState.playerCredits}
+    uiTheme={uiTheme}
+  />
+) : (
   <StarSystemCanvas
     bodies={systemBodies}
     getFrameState={getFrameState}
@@ -1452,7 +1774,7 @@ const mapView = (
     miningTargetId={hudState.miningTargetId}
     starColor={activeStar.color}
     uiTheme={uiTheme}
-    cameraModeOverride={mapMode}
+    cameraModeOverride={mapMode === "galaxy" ? "star" : mapMode}
     autopilotMode={autopilotMode}
     viewportInsets={{ top: 72, bottom: 264 }}
   />
@@ -1497,24 +1819,48 @@ const activePanel = (
     onUndock={handleUndockActivate}
     onRefuel={() => {
       const missingFuel = Math.max(0, gameState.ship.maxFuel - gameState.ship.fuelLevel);
-      const tons = Math.ceil(missingFuel / 1000);
-      const cost = tons * 400;
       if (!gameState.isDocked || !gameState.dockedPortId || missingFuel <= 0) return;
+      const portId = gameState.dockedPortId;
+      const localMarket = gameState.markets[portId];
+      const fuelMarket = localMarket?.fuel;
+      if (!fuelMarket) {
+        addConsoleLog("Refuel control: dockyard propellant market data unavailable.", "warning");
+        return;
+      }
+
+      const tons = Math.ceil(missingFuel / 1000);
+      if (fuelMarket.available < tons) {
+        addConsoleLog(`Refuel control: station stock only has ${fuelMarket.available}t hydrogen available; ${tons}t needed for full transfer.`, "warning");
+        return;
+      }
+
+      const cost = tons * fuelMarket.buyPrice;
       if (gameState.playerCredits < cost) {
-        addConsoleLog("Refuel control: insufficient credits for propellant transfer.", "warning");
+        addConsoleLog(`Refuel control: insufficient credits for propellant transfer. Need ${cost}¢ at ${fuelMarket.buyPrice}¢/t.`, "warning");
         return;
       }
       commitGameState((prev) => ({
         ...prev,
         playerCredits: prev.playerCredits - cost,
+        markets: {
+          ...prev.markets,
+          [portId]: {
+            ...prev.markets[portId],
+            fuel: {
+              ...prev.markets[portId].fuel,
+              available: prev.markets[portId].fuel.available - tons,
+            },
+          },
+        },
         ship: { ...prev.ship, fuelLevel: prev.ship.maxFuel },
         playerProfile: {
           ...prev.playerProfile,
           stats: { ...prev.playerProfile.stats, refuels: prev.playerProfile.stats.refuels + 1 },
         },
       }));
-      addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}Â¢.`, "success");
+      addConsoleLog(`Refuel control: tanks topped off (+${tons}t hydrogen), debit ${cost}¢ at ${fuelMarket.buyPrice}¢/t.`, "success");
     }}
+    onSellSurveyData={handleSellSurveyData}
     onToggleMining={handleToggleMining}
     onSelectPort={(portId) => commitGameState((prev) => prev.isDocked ? { ...prev, dockedPortId: portId } : prev)}
     onBuyShip={handleBuyShip}
@@ -1522,6 +1868,7 @@ const activePanel = (
     onUnlockUpgrade={handleUnlockUpgrade}
     onAcceptContract={handleAcceptContract}
     onCompleteContract={handleCompleteContract}
+    onResumeTutorial={handleResumeTutorial}
   />
 );
 
@@ -1542,8 +1889,8 @@ const activePanel = (
             setProfileSummaries(listCommanderProfiles());
           }
         }}
-        onCreateProfile={({ name, starId, profession }) => {
-          const newState = createCustomInitialState(name, starId, profession);
+        onCreateProfile={({ name, starId, profession, tutorialMode }) => {
+          const newState = createCustomInitialState(name, starId, profession, tutorialMode);
           saveCommanderProfile(newState, newState.profileId);
           commitGameState(newState);
           setProfileSummaries(listCommanderProfiles());
@@ -1568,12 +1915,30 @@ return (
 <div className="elite-map-layer">{mapView}</div>
 <div className="elite-vignette" />
 <div className="elite-scanline" />
+<TutorialHud
+gameState={hudState}
+bodies={systemBodies}
+onSelectBody={handleSelectTutorialBody}
+onOpenContracts={handleOpenContracts}
+onSkipTutorial={handleSkipTutorial}
+/>
+{showDockingSequence && dockedPortRecord && dockedBody ? (
+  <DockingSequenceModal
+    ship={hudState.ship}
+    body={dockedBody}
+    port={dockedPortRecord}
+    onComplete={() => {
+      setShowDockingSequence(false);
+      setRequestedManagementTab("dock-main");
+    }}
+  />
+) : null}
 <EliteCockpitHud
 gameState={hudState}
 activeStar={activeStar}
 selectedBody={selectedBody}
 targetSoi={targetSoi}
-canDock={canDockAtSelectedBody}
+canDock={canDockAtSelectedBody && !departureLockedAtSelectedBody}
 dockingDistance={dockingDistance}
 dockingRelativeSpeed={dockingRelativeSpeed}
 dockingClearance={dockingClearance}
@@ -1588,6 +1953,9 @@ setMapMode={setMapMode}
 activePanel={activePanel}
 activeTab={activeTab}
 setActiveTab={setActiveTab}
+requestedManagementTab={requestedManagementTab}
+onRequestedManagementTabHandled={() => setRequestedManagementTab(null)}
+dockedPortRecord={dockedPortRecord}
 uiTheme={uiTheme}
 setUiTheme={setUiTheme}
 fuelSimEnabled={fuelSimEnabled}
@@ -1602,6 +1970,10 @@ onClearTarget={() => commitGameState((g) => ({ ...g, selectedBodyId: null }))}
 onDock={handleDockActivate}
 onUndock={handleUndockActivate}
 onToggleMining={handleToggleMining}
+onScanSelectedBody={handleScanSelectedBody}
+canScanSelectedBody={canScanSelectedBody}
+selectedBodyScanned={selectedBodyScanned}
+galacticMapUnlocked={galacticMapUnlocked}
 onExitToMainMenu={() => setIsInMainMenu(true)}
 />
 </div>

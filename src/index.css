@@ -162,12 +162,12 @@ input {
 
 .elite-bottom-left {
   left: 1rem;
-  bottom: 9.8rem;
+  bottom: 2.2rem;
 }
 
 .elite-bottom-right {
   right: 1rem;
-  bottom: 9.8rem;
+  bottom: 4.2rem;
   width: min(22rem, 26vw);
 }
 
@@ -186,6 +186,16 @@ input {
   font-weight: 800;
   text-transform: uppercase;
   cursor: pointer;
+}
+
+.elite-panel.is-bottom-docked {
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.elite-panel.is-bottom-docked .elite-panel-title {
+  border-top: 1px solid var(--elite-accent);
+  border-bottom: 0;
 }
 
 .elite-panel-title span,
@@ -294,6 +304,14 @@ input {
   transform: translateX(-50%);
 }
 
+.elite-tutorial-hud-anchor {
+  position: absolute;
+  top: 5rem;
+  left: calc(min(23rem, 28vw) + 2rem);
+  z-index: 30;
+  width: min(410px, calc(100vw - min(23rem, 28vw) - 3rem));
+}
+
 .elite-mode-title,
 .elite-top-nav button,
 .elite-button-strip button,
@@ -374,9 +392,12 @@ button:disabled:hover {
 
 .elite-flight-console {
   position: absolute;
-  right: min(25rem, 30vw);
   bottom: 1rem;
   left: min(25rem, 30vw);
+  right: auto;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: calc(100vw - min(25rem, 30vw) - 1rem);
   border: 1px solid var(--elite-line);
   background: var(--elite-panel-strong);
 }
@@ -893,6 +914,617 @@ input[type="range"] {
   cursor: pointer;
 }
 
+.elite-docking-backdrop {
+  z-index: 30;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.9), rgba(3, 10, 14, 0.9)),
+    rgba(0, 0, 0, 0.84);
+}
+
+.elite-docking-modal {
+  border-color: var(--elite-cyan);
+}
+
+.elite-docking-layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 24rem) minmax(0, 1fr);
+  min-height: calc(100% - 3rem);
+}
+
+.elite-docking-sidebar {
+  border-right: 1px solid var(--elite-line);
+  padding: 1.25rem;
+  background: rgba(0, 12, 18, 0.42);
+}
+
+.elite-docking-kicker,
+.elite-dock-services-kicker {
+  color: var(--elite-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.elite-docking-sidebar h2,
+.elite-dock-services-hero h2 {
+  margin: 0.45rem 0 0;
+  font-size: 1.4rem;
+  color: var(--elite-cyan);
+}
+
+.elite-docking-sidebar > p,
+.elite-dock-services-hero p {
+  margin: 0.35rem 0 0;
+  color: var(--elite-text);
+  font-size: 0.82rem;
+}
+
+.elite-docking-status,
+.elite-docking-alert {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: 1rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--elite-line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.elite-docking-status span,
+.elite-docking-alert {
+  color: var(--elite-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.elite-docking-status strong {
+  color: var(--elite-text);
+  font-size: 0.9rem;
+}
+
+.elite-docking-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--elite-green);
+}
+
+.elite-docking-alert.is-hot {
+  color: var(--elite-red);
+  border-color: rgba(255, 67, 95, 0.5);
+}
+
+.elite-docking-log {
+  margin-top: 1rem;
+  border: 1px solid var(--elite-line);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 0.85rem 0.95rem;
+  max-height: 20rem;
+  overflow: auto;
+}
+
+.elite-docking-log p {
+  margin: 0 0 0.65rem;
+  color: var(--elite-text);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.elite-docking-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.elite-docking-phase {
+  width: min(54rem, 100%);
+  display: grid;
+  gap: 1.25rem;
+}
+
+.elite-docking-phase-copy h3 {
+  margin: 0.35rem 0 0;
+  font-size: 1.5rem;
+  color: var(--elite-text);
+}
+
+.elite-docking-phase-copy p {
+  margin: 0.45rem 0 0;
+  color: var(--elite-muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.elite-docking-arrival-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.elite-docking-arrival-card > div,
+.elite-dock-services-meta > div {
+  border: 1px solid var(--elite-line);
+  padding: 0.9rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.elite-docking-arrival-card span,
+.elite-dock-services-meta span {
+  display: block;
+  color: var(--elite-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.elite-docking-arrival-card strong,
+.elite-dock-services-meta strong {
+  display: block;
+  margin-top: 0.4rem;
+  color: var(--elite-text);
+  font-size: 0.92rem;
+}
+
+.elite-docking-primary,
+.elite-dock-undock {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--elite-cyan);
+  background: rgba(38, 217, 255, 0.1);
+  color: var(--elite-cyan);
+  padding: 0.8rem 1rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.elite-docking-gate-view,
+.elite-docking-pad-view {
+  display: grid;
+  gap: 1rem;
+}
+
+.elite-docking-gate-frame,
+.elite-docking-pad {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 20rem;
+  border: 1px solid var(--elite-line);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    rgba(0, 0, 0, 0.34);
+  background-size: 2rem 2rem;
+  overflow: hidden;
+}
+
+.elite-docking-gate-target {
+  width: min(23rem, 70%);
+  height: 10rem;
+  border: 2px solid var(--elite-cyan);
+  box-shadow: inset 0 0 0 1px rgba(38, 217, 255, 0.25);
+}
+
+.elite-docking-gate-ship {
+  position: absolute;
+  width: 4rem;
+  height: 6rem;
+  border: 1px solid var(--elite-accent);
+  background:
+    linear-gradient(180deg, rgba(255, 140, 26, 0.2), rgba(255, 140, 26, 0.06));
+  clip-path: polygon(50% 0%, 82% 24%, 100% 100%, 0% 100%, 18% 24%);
+}
+
+.elite-docking-pad-target {
+  width: min(24rem, 72%);
+  height: 14rem;
+  border: 2px solid var(--elite-green);
+  box-shadow: inset 0 0 0 1px rgba(22, 242, 139, 0.28);
+}
+
+.elite-docking-pad-ship {
+  position: absolute;
+  border: 1px solid var(--elite-cyan);
+  background:
+    linear-gradient(180deg, rgba(38, 217, 255, 0.18), rgba(38, 217, 255, 0.06));
+  clip-path: polygon(50% 0%, 88% 18%, 100% 100%, 0% 100%, 12% 18%);
+  transform-origin: center;
+}
+
+.elite-docking-progress {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.85rem;
+  color: var(--elite-text);
+}
+
+.elite-docking-progress span,
+.elite-docking-progress strong {
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.elite-docking-progress div {
+  height: 0.55rem;
+  border: 1px solid var(--elite-line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.elite-docking-progress i {
+  display: block;
+  height: 100%;
+  background: var(--elite-cyan);
+}
+
+.elite-docking-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.elite-docking-controls button,
+.elite-dock-service-card,
+.elite-dock-undock {
+  border: 1px solid var(--elite-line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--elite-text);
+  padding: 0.7rem 0.85rem;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.elite-docking-controls button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.elite-dock-services {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.elite-dock-services-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(18rem, 1fr);
+  gap: 1rem;
+}
+
+.elite-dock-services-meta {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.elite-dock-services-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.elite-dock-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.elite-dock-status-card {
+  border: 1px solid var(--elite-line);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.85rem 0.95rem;
+}
+
+.elite-dock-status-card span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--elite-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.elite-dock-status-card strong {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--elite-text);
+  font-size: 0.92rem;
+}
+
+.elite-dock-ops-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.elite-dock-ops-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid rgba(22, 242, 139, 0.3);
+  background: rgba(22, 242, 139, 0.08);
+  color: var(--elite-green);
+  padding: 0.6rem 0.8rem;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.elite-dock-ops-chip.is-muted {
+  border-color: var(--elite-line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--elite-muted);
+}
+
+.elite-dock-service-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.85rem;
+  text-align: left;
+}
+
+.elite-dock-service-card.is-disabled {
+  color: var(--elite-muted);
+}
+
+.elite-dock-service-icon {
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 2.2rem;
+  padding-top: 0.1rem;
+  color: var(--elite-cyan);
+}
+
+.elite-dock-service-copy {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.elite-dock-service-copy strong {
+  color: var(--elite-text);
+  font-size: 0.86rem;
+}
+
+.elite-dock-service-copy small {
+  color: var(--elite-muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  text-transform: none;
+}
+
+.elite-dock-services-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--elite-line);
+  padding-top: 1rem;
+}
+
+.elite-dock-service-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--elite-muted);
+  font-size: 0.78rem;
+}
+
+.elite-station-panel-shell,
+.elite-station-section {
+  border: 1px solid var(--elite-line);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 1rem;
+}
+
+.elite-station-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.elite-station-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  color: var(--elite-text);
+  font-size: 0.92rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.elite-station-panel-subtitle {
+  margin: 0.35rem 0 0;
+  color: var(--elite-muted);
+  font-size: 0.76rem;
+}
+
+.elite-station-panel-credit {
+  border: 1px solid var(--elite-line);
+  padding: 0.75rem 0.9rem;
+  min-width: 12rem;
+}
+
+.elite-station-panel-credit span,
+.elite-shipyard-overview span,
+.elite-station-section-heading span,
+.elite-shipyard-card small,
+.elite-upgrade-card span {
+  color: var(--elite-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.elite-station-panel-credit strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.45rem;
+  color: var(--elite-cyan);
+  font-size: 0.94rem;
+}
+
+.elite-shipyard-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+
+.elite-shipyard-overview > div {
+  border: 1px solid var(--elite-line);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 0.85rem 0.95rem;
+}
+
+.elite-shipyard-overview strong {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--elite-text);
+  font-size: 0.94rem;
+}
+
+.elite-shipyard-overview small,
+.elite-shipyard-card p,
+.elite-upgrade-card p {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--elite-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.elite-station-section-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+  color: var(--elite-cyan);
+}
+
+.elite-shipyard-grid,
+.elite-upgrade-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.elite-shipyard-card,
+.elite-upgrade-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--elite-line);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 0.9rem;
+}
+
+.elite-shipyard-card strong,
+.elite-upgrade-card strong {
+  display: block;
+  color: var(--elite-text);
+  font-size: 0.9rem;
+}
+
+.elite-shipyard-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.5rem;
+  min-width: 8rem;
+}
+
+.elite-shipyard-actions span {
+  color: var(--elite-cyan);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.elite-shipyard-card button,
+.elite-upgrade-card button {
+  border: 1px solid var(--elite-line);
+  background: rgba(38, 217, 255, 0.1);
+  color: var(--elite-cyan);
+  padding: 0.55rem 0.8rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.elite-shipyard-card button.is-disabled,
+.elite-upgrade-card button.is-disabled,
+.elite-shipyard-card button:disabled,
+.elite-upgrade-card button:disabled {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--elite-muted);
+}
+
+.elite-upgrade-card.is-installed {
+  border-color: rgba(22, 242, 139, 0.35);
+}
+
+.elite-upgrade-card.is-installed .elite-shipyard-actions span {
+  color: var(--elite-green);
+}
+
+.elite-shipyard-empty {
+  border: 1px solid var(--elite-line);
+  padding: 1rem;
+  color: var(--elite-muted);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 900px) {
+  .elite-docking-layout,
+  .elite-dock-services-hero,
+  .elite-dock-status-grid,
+  .elite-shipyard-overview,
+  .elite-dock-services-grid,
+  .elite-docking-arrival-card,
+  .elite-shipyard-grid,
+  .elite-upgrade-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .elite-station-panel-header,
+  .elite-docking-sidebar {
+    display: block;
+  }
+
+  .elite-station-panel-credit {
+    margin-top: 1rem;
+  }
+
+  .elite-docking-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--elite-line);
+  }
+
+  .elite-dock-services-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .elite-dock-undock,
+  .elite-docking-primary {
+    justify-self: stretch;
+    justify-content: center;
+  }
+}
+
 .elite-modal-body {
   height: calc(100% - 3.25rem);
   overflow: auto;
@@ -990,8 +1622,9 @@ input[type="range"] {
   }
 
   .elite-flight-console {
-    right: 1rem;
     left: 1rem;
+    right: auto;
+    max-width: calc(100vw - 2rem);
   }
 
   .elite-flight-grid {
@@ -1036,6 +1669,7 @@ input[type="range"] {
   .elite-panel,
   .elite-flight-console,
   .elite-management-dock,
+  .elite-tutorial-hud-anchor,
   .elite-scale-readout {
     position: relative;
     inset: auto;

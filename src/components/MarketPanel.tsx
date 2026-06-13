@@ -4,12 +4,11 @@
  */
 
 import React from "react";
-import { GameState, CelestialBody, OwnedShipRecord } from "../types";
-import { ShipyardCatalogEntry } from "../utils/shipManagement";
+import { GameState, CelestialBody } from "../types";
 import { RESOURCE_TYPES } from "../utils/gameData";
 import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName, getDisplayPortServices, getPortsForBody } from "../utils/worldText";
 import { getAbsoluteBodyPosition, getBodyVelocity, getDockingSpecs } from "../utils/physics";
-import { ShoppingCart, Coins, ShieldAlert, Award, Inbox, HardDrive, Anchor, Star, Flame } from "lucide-react";
+import { ShoppingCart, Coins, ShieldAlert, Inbox, HardDrive, Flame, Anchor } from "lucide-react";
 
 interface MarketPanelProps {
   gameState: GameState;
@@ -18,12 +17,9 @@ interface MarketPanelProps {
   onDock: () => void;
   onUndock: () => void;
   onRefuel: () => void;
+  onSellSurveyData: () => void;
   onToggleMining: () => void;
   onSelectPort: (portId: string) => void;
-  onBuyShip: (modelId: string) => void;
-  onActivateShip: (shipId: string) => void;
-  shipyardCatalog: ShipyardCatalogEntry[];
-  dockedPortInventory: OwnedShipRecord[];
   bodies: CelestialBody[];
 }
 
@@ -34,12 +30,9 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
   onDock,
   onUndock,
   onRefuel,
+  onSellSurveyData,
   onToggleMining,
   onSelectPort,
-  onBuyShip,
-  onActivateShip,
-  shipyardCatalog,
-  dockedPortInventory,
   bodies,
 }) => {
   const { ship, markets, isDocked, selectedBodyId, dockedBodyId, dockedPortId, playerCredits, gameTime } = gameState;
@@ -94,7 +87,13 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
                   distanceToBodyValue < 5e5; // 500km
 
   const localMarket = activePort ? markets[activePort.id] : null;
-  const hasShipyard = !!activePort?.services.includes("shipyard");
+  const fuelMarket = localMarket?.fuel;
+  const missingFuelKg = Math.max(0, ship.maxFuel - ship.fuelLevel);
+  const refuelNeedTons = Math.ceil(missingFuelKg / 1000);
+  const refuelPricePerTon = fuelMarket?.buyPrice ?? 0;
+  const refuelStockTons = fuelMarket?.available ?? 0;
+  const canRefuel = missingFuelKg > 0 && refuelStockTons >= refuelNeedTons;
+  const surveyDataValue = Object.values(gameState.surveyDataByBody).reduce<number>((sum, value) => sum + Number(value || 0), 0);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 font-sans">
@@ -126,11 +125,30 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
 
             <p className="text-xs text-stone-400 mb-4 italic">{activePort?.description || getDisplayPortDescription(activeBody)}</p>
 
-            <div className="mb-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px] font-mono">
+            <div className="mb-4 grid grid-cols-2 md:grid-cols-5 gap-3 text-[11px] font-mono">
               <div className="bg-stone-950 border border-stone-800 rounded-lg p-2.5 text-stone-400">Cargo Free<br /><span className="text-slate-200 font-bold">{cargoLeft} t</span></div>
               <div className="bg-stone-950 border border-stone-800 rounded-lg p-2.5 text-stone-400">Passenger Berths<br /><span className="text-slate-200 font-bold">{ship.passengerCount}/{ship.passengerCapacity}</span></div>
               <div className="bg-stone-950 border border-stone-800 rounded-lg p-2.5 text-stone-400">Fuel Tank<br /><span className="text-slate-200 font-bold">{Math.round(ship.fuelLevel).toLocaleString()} / {Math.round(ship.maxFuel).toLocaleString()} kg</span></div>
-              <button onClick={onRefuel} className="bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg p-2.5 text-xs font-bold">REFUEL SHIP</button>
+              <button
+                onClick={onRefuel}
+                disabled={!canRefuel}
+                className={`rounded-lg p-2.5 text-xs font-bold ${canRefuel ? "bg-emerald-600 hover:bg-emerald-500 text-white" : "bg-stone-800 text-stone-500 cursor-not-allowed"}`}
+                title={fuelMarket ? `${refuelPricePerTon}¢/t • ${refuelStockTons}t stock` : "Fuel market offline"}
+              >
+                REFUEL SHIP
+                <br />
+                <span className="text-[10px] font-mono opacity-80">{fuelMarket ? `${refuelPricePerTon}¢/t • ${refuelStockTons}t stock` : "MARKET OFFLINE"}</span>
+              </button>
+              <button
+                onClick={onSellSurveyData}
+                disabled={surveyDataValue <= 0}
+                className={`rounded-lg p-2.5 text-xs font-bold ${surveyDataValue > 0 ? "bg-sky-600 hover:bg-sky-500 text-white" : "bg-stone-800 text-stone-500 cursor-not-allowed"}`}
+                title={surveyDataValue > 0 ? `Sell ${surveyDataValue.toLocaleString()}¢ worth of survey telemetry` : "No survey telemetry ready for sale"}
+              >
+                SELL SURVEY DATA
+                <br />
+                <span className="text-[10px] font-mono opacity-80">{surveyDataValue.toLocaleString()}¢ queued</span>
+              </button>
             </div>
 
             {selectablePorts.length > 1 && (
@@ -147,52 +165,6 @@ export const MarketPanel: React.FC<MarketPanelProps> = ({
                     </button>
                   );
                 })}
-              </div>
-            )}
-
-            {hasShipyard && (
-              <div className="mb-5 space-y-4 border border-sky-900/40 bg-sky-950/10 rounded-xl p-4">
-                <div>
-                  <h4 className="text-sm font-bold text-slate-100 uppercase tracking-wide">Shipyard Berths</h4>
-                  <p className="text-xs text-stone-400 mt-1">Only hulls physically berthed at this base/station can be activated here.</p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {dockedPortInventory.map((entry) => (
-                    <div key={entry.id} className="border border-stone-800 rounded-lg p-3 bg-stone-950/70">
-                      <div className="flex justify-between items-start gap-3">
-                        <div>
-                          <div className="text-slate-200 font-bold">{entry.name}</div>
-                          <div className="text-[11px] font-mono text-stone-500">{entry.ship.manufacturer} • cargo {entry.ship.cargoCapacityTons ?? entry.ship.cargoCapacity}t • berths {entry.ship.passengerCapacity}</div>
-                        </div>
-                        <button disabled={gameState.activeShipId === entry.id} onClick={() => onActivateShip(entry.id)} className={`px-3 py-1.5 rounded text-xs font-bold ${gameState.activeShipId === entry.id ? "bg-stone-800 text-stone-500" : "bg-sky-600 hover:bg-sky-500 text-white"}`}>
-                          {gameState.activeShipId === entry.id ? "ACTIVE" : "MAKE ACTIVE"}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div>
-                  <h5 className="text-xs font-bold text-stone-300 uppercase tracking-wider mb-2">Hull Market</h5>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {shipyardCatalog.map((entry) => (
-                      <div key={entry.id} className="border border-stone-800 rounded-lg p-3 bg-stone-950/70">
-                        <div className="flex justify-between items-start gap-3">
-                          <div>
-                            <div className="text-slate-200 font-bold">{entry.name}</div>
-                            <div className="text-[11px] text-stone-500 font-mono">{entry.manufacturer} • {entry.class.toUpperCase()}</div>
-                            <p className="text-xs text-stone-400 mt-1">{entry.description}</p>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-amber-400 font-mono font-bold">{entry.baseCost.toLocaleString()}¢</div>
-                            <button disabled={playerCredits < entry.baseCost} onClick={() => onBuyShip(entry.id)} className={`mt-2 px-3 py-1.5 rounded text-xs font-bold ${playerCredits < entry.baseCost ? "bg-stone-800 text-stone-500" : "bg-emerald-600 hover:bg-emerald-500 text-white"}`}>BUY HULL</button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             )}
 

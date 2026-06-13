@@ -6,6 +6,7 @@ import {
   CircleDot,
   Compass,
   Crosshair,
+  Dock,
   Gauge,
   Globe,
   Hammer,
@@ -26,10 +27,13 @@ import type { ApproachGuidance } from "../utils/spaceFlightAutopilot";
 import { formatGameTime } from "../utils/gameData";
 import { DEFAULT_POWER_DISTRIBUTION, SIDEWINDER_STARTER_PROFILE } from "../data/ships";
 import { AU } from "../data/stars";
-import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName } from "../utils/worldText";
+import { getDisplayPortDescription, getDisplayPortFaction, getDisplayPortName, PortRecord } from "../utils/worldText";
+import { DockServicesScreen } from "./DockServicesScreen";
 
 type CockpitTab = "nav" | "market" | "upgrades" | "contracts";
-type MapMode = "star" | "ship" | "target";
+type ManagementTab = Exclude<CockpitTab, "nav">;
+type DockModalTab = ManagementTab | "dock-main";
+type MapMode = "star" | "ship" | "target" | "galaxy";
 type UiTheme = "amber" | "blue" | "green" | "red";
 type AutopilotMode = "none" | "match-speed" | "circularize" | "align-target" | "approach-target" | "goto-target" | "hold-prograde" | "hold-retrograde" | "hold-radial-out" | "hold-radial-in" | "hold-anti-target";
 const DOCKING_HOLD_SECONDS = 4;
@@ -54,6 +58,9 @@ interface EliteCockpitHudProps {
   activePanel: React.ReactNode;
   activeTab: CockpitTab;
   setActiveTab: (tab: CockpitTab) => void;
+  requestedManagementTab?: DockModalTab | null;
+  onRequestedManagementTabHandled?: () => void;
+  dockedPortRecord?: PortRecord | null;
   uiTheme: UiTheme;
   setUiTheme: (theme: UiTheme) => void;
   fuelSimEnabled: boolean;
@@ -68,6 +75,10 @@ interface EliteCockpitHudProps {
   onDock: () => void;
   onUndock: () => void;
   onToggleMining: () => void;
+  onScanSelectedBody: () => void;
+  canScanSelectedBody: boolean;
+  selectedBodyScanned: boolean;
+  galacticMapUnlocked: boolean;
   onExitToMainMenu?: () => void;
 }
 
@@ -75,6 +86,7 @@ const mapTabs: Array<{ id: MapMode; label: string; icon: React.ElementType }> = 
   { id: "star", label: "STAR", icon: Compass },
   { id: "ship", label: "SHIP", icon: Ship },
   { id: "target", label: "TARGET", icon: Crosshair },
+  { id: "galaxy", label: "GALAXY", icon: Globe },
 ];
 
 const managementTabs: Array<{ id: CockpitTab; label: string; icon: React.ElementType }> = [
@@ -182,8 +194,16 @@ const HudPanel = React.memo(function HudPanel({
   onToggle: () => void;
   children: React.ReactNode;
 }) {
+  const isBottomDocked = className.includes("elite-bottom-");
+  const panelClassName = [
+    "elite-panel",
+    className,
+    isBottomDocked ? "is-bottom-docked" : "",
+    collapsed ? "is-collapsed" : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <section className={`elite-panel ${className} ${collapsed ? "is-collapsed" : ""}`} aria-label={title}>
+    <section className={panelClassName} aria-label={title}>
       <button
         className="elite-panel-title"
         type="button"
@@ -225,6 +245,9 @@ function EliteCockpitHudInner({
   activePanel,
   activeTab,
   setActiveTab,
+  requestedManagementTab,
+  onRequestedManagementTabHandled,
+  dockedPortRecord,
   uiTheme,
   setUiTheme,
   fuelSimEnabled,
@@ -239,10 +262,14 @@ function EliteCockpitHudInner({
   onDock,
   onUndock,
   onToggleMining,
+  onScanSelectedBody,
+  canScanSelectedBody,
+  selectedBodyScanned,
+  galacticMapUnlocked,
   onExitToMainMenu,
 }: EliteCockpitHudProps) {
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({});
-  const [modalTab, setModalTab] = useState<CockpitTab | null>(null);
+  const [modalTab, setModalTab] = useState<DockModalTab | null>(null);
   const wasDockedRef = useRef(gameState.isDocked);
   const powerDistribution = gameState.ship.powerDistribution ?? DEFAULT_POWER_DISTRIBUTION;
   const speed = Math.hypot(gameState.ship.vx, gameState.ship.vy);
@@ -274,19 +301,32 @@ function EliteCockpitHudInner({
   const togglePanel = (panel: string) => {
     setCollapsedPanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
   };
-  const openManagement = (tab: CockpitTab) => {
+  const openManagement = (tab: DockModalTab) => {
     if (!gameState.isDocked) return;
-    setActiveTab(tab);
+    if (tab !== "dock-main") {
+      setActiveTab(tab);
+    }
     setModalTab(tab);
   };
 
   useEffect(() => {
-    if (gameState.isDocked && !wasDockedRef.current) {
+    if (!requestedManagementTab) return;
+    if (gameState.isDocked) {
+      if (requestedManagementTab !== "dock-main") {
+        setActiveTab(requestedManagementTab);
+      }
+      setModalTab(requestedManagementTab);
+    }
+    onRequestedManagementTabHandled?.();
+  }, [requestedManagementTab, gameState.isDocked, setActiveTab, onRequestedManagementTabHandled]);
+
+  useEffect(() => {
+    if (gameState.isDocked && !wasDockedRef.current && !requestedManagementTab) {
       setActiveTab("market");
-      setModalTab("market");
+      setModalTab("dock-main");
     }
     wasDockedRef.current = gameState.isDocked;
-  }, [gameState.isDocked, setActiveTab]);
+  }, [gameState.isDocked, requestedManagementTab, setActiveTab]);
 
   return (
     <>
@@ -395,12 +435,14 @@ function EliteCockpitHudInner({
         </div>
         {mapTabs.map((tab) => {
           const Icon = tab.icon;
+          const disabled = tab.id === "galaxy" && !galacticMapUnlocked;
           return (
             <button
               key={tab.id}
               className={mapMode === tab.id ? "is-active" : ""}
-              onClick={() => setMapMode(tab.id)}
-              title={`Center navigation map on ${tab.label.toLowerCase()} reference`}
+              disabled={disabled}
+              onClick={() => !disabled && setMapMode(tab.id)}
+              title={disabled ? "Install the Galactic Survey Link to reopen the galaxy chart" : `Center navigation map on ${tab.label.toLowerCase()} reference`}
             >
               <Icon size={15} />
               {tab.label}
@@ -419,8 +461,8 @@ function EliteCockpitHudInner({
       >
         {selectedBody ? (
           <>
-            <DataRow label="Name" value={selectedBody.name} tone="tone-cyan" />
-            <DataRow label="Class" value={selectedBody.type.toUpperCase()} />
+            <DataRow label="Name" value={!selectedBodyScanned && !selectedBody.hasMarket ? "UNKNOWN CONTACT" : selectedBody.name} tone="tone-cyan" />
+            <DataRow label="Class" value={selectedBodyScanned || selectedBody.hasMarket ? selectedBody.type.toUpperCase() : "UNRESOLVED"} />
             <DataRow label="Market" value={selectedBody.hasMarket ? getDisplayPortName(selectedBody) : "NONE"} />
             {selectedBody.hasMarket && <DataRow label="Faction" value={getDisplayPortFaction(selectedBody)} />}
             {selectedBody.type !== "station" && (() => {
@@ -497,6 +539,10 @@ function EliteCockpitHudInner({
               <button onClick={onToggleMining} title={gameState.miningTargetId === selectedBody.id ? "Stop mining the selected target" : "Start mining the selected target"}>
                 <Hammer size={13} />
                 {gameState.miningTargetId === selectedBody.id ? "STOP" : "MINE"}
+              </button>
+              <button disabled={!canScanSelectedBody || selectedBodyScanned} onClick={onScanSelectedBody} title={selectedBodyScanned ? "Target already scanned" : "Resolve the selected body and store survey data"}>
+                <Satellite size={13} />
+                {selectedBodyScanned ? "SCANNED" : "SCAN"}
               </button>
             </div>
             {selectedBody.hasMarket && <p className="elite-muted">{getDisplayPortDescription(selectedBody)}</p>}
@@ -780,6 +826,15 @@ function EliteCockpitHudInner({
           <Crosshair size={15} />
           {selectedBody ? "CLEAR" : "NO TGT"}
         </button>
+        <button
+          type="button"
+          disabled={!gameState.isDocked}
+          title={gameState.isDocked ? "Open dock terminal" : "Dock at a station to access services"}
+          onClick={() => openManagement("dock-main")}
+        >
+          <Dock size={15} />
+          PORT
+        </button>
         {managementTabs.map((tab) => {
           const Icon = tab.icon;
           return (
@@ -788,7 +843,7 @@ function EliteCockpitHudInner({
               type="button"
               disabled={!gameState.isDocked}
               title={gameState.isDocked ? `${tab.label} services` : "Dock at a station to access services"}
-              onClick={() => openManagement(tab.id)}
+              onClick={() => openManagement(tab.id as ManagementTab)}
             >
               <Icon size={15} />
               {tab.label}
@@ -798,18 +853,35 @@ function EliteCockpitHudInner({
       </nav>
 
       {modalTab && (
-        <div className="elite-modal-backdrop" role="dialog" aria-modal="true" aria-label={`${managementTabs.find((tab) => tab.id === modalTab)?.label} screen`}>
+        <div className="elite-modal-backdrop" role="dialog" aria-modal="true" aria-label={modalTab === "dock-main" ? "Dock terminal" : `${managementTabs.find((tab) => tab.id === modalTab)?.label} screen`}>
           <section className="elite-fullscreen-modal">
             <div className="elite-modal-header">
               <span>
                 <Activity size={15} />
-                {managementTabs.find((tab) => tab.id === modalTab)?.label} PANEL
+                {modalTab === "dock-main" ? "DOCK TERMINAL" : `${managementTabs.find((tab) => tab.id === modalTab)?.label} PANEL`}
               </span>
               <button type="button" onClick={() => setModalTab(null)} title="Close this management screen">
                 CLOSE
               </button>
             </div>
-            <div className="elite-modal-body">{activePanel}</div>
+            <div className="elite-modal-body">
+              {modalTab === "dock-main" && dockedPortRecord ? (
+                <DockServicesScreen
+                  port={dockedPortRecord}
+                  credits={gameState.playerCredits}
+                  cargoFreeTons={Math.max(0, gameState.ship.cargoCapacity - cargoUsed)}
+                  surveyDataValue={Object.values(gameState.surveyDataByBody).reduce((sum, value) => sum + Number(value || 0), 0)}
+                  activeContracts={gameState.contracts.filter((contract) => contract.accepted && !contract.completed && !contract.failed).length}
+                  canRefuel={gameState.ship.fuelLevel < gameState.ship.maxFuel}
+                  hasShipyardAccess={dockedPortRecord.services.includes("shipyard")}
+                  onOpenTab={(tab) => openManagement(tab)}
+                  onUndock={() => {
+                    setModalTab(null);
+                    onUndock();
+                  }}
+                />
+              ) : activePanel}
+            </div>
           </section>
         </div>
       )}
